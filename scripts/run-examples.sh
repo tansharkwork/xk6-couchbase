@@ -28,6 +28,7 @@ EXAMPLES=(
   test-insert.js
   test-insertbatch.js
   test-upsert.js
+  test-remove.js
   test-findone.js
   test-find.js
   test-new-with-conn-per-vu.js

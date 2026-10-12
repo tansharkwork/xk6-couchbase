@@ -19,6 +19,7 @@ const (
 	defaultBucketReadinessTimeout    = 5 * time.Second
 	defaultDoConnectionPerVU         = true
 	defaultConnectionBufferSizeBytes = 2048
+	defaultRemoveTimeout             = time.Second
 )
 
 // RootModule is created once per k6 run. It holds state that is shared across
@@ -185,23 +186,52 @@ func (c *Client) Upsert(bucketName string, scope string, collection string, docI
 	return nil
 }
 
-// Remove deletes a document by ID using majority durability.
-func (c *Client) Remove(bucketName string, scope string, collection string, docID string) error {
+// RemoveOptions is the optional trailing argument of remove and
+// removeWithDurability. It is an object, not a bare duration, so scripts that
+// pass an unrelated extra argument (as older README examples did) keep working.
+type RemoveOptions struct {
+	Timeout string `json:"timeout,omitempty" js:"timeout"`
+}
+
+func (o RemoveOptions) timeout() (time.Duration, error) {
+	if o.Timeout == "" {
+		return defaultRemoveTimeout, nil
+	}
+	timeout, err := time.ParseDuration(o.Timeout)
+	if err != nil || timeout <= 0 {
+		return 0, fmt.Errorf("remove timeout must be a positive duration such as \"1s\", got %q", o.Timeout)
+	}
+	return timeout, nil
+}
+
+// Remove deletes a document by ID without durability requirements. The
+// optional opts.Timeout defaults to 1s.
+func (c *Client) Remove(bucketName string, scope string, collection string, docID string, opts RemoveOptions) error {
+	return c.remove(bucketName, scope, collection, docID, opts, gocb.DurabilityLevelNone)
+}
+
+// RemoveWithDurability deletes a document by ID and waits until a majority of
+// replicas acknowledge it. The bucket's replica count must be satisfiable by
+// the cluster's nodes. The optional opts.Timeout defaults to 1s.
+func (c *Client) RemoveWithDurability(bucketName string, scope string, collection string, docID string, opts RemoveOptions) error {
+	return c.remove(bucketName, scope, collection, docID, opts, gocb.DurabilityLevelMajority)
+}
+
+func (c *Client) remove(bucketName string, scope string, collection string, docID string, opts RemoveOptions, durability gocb.DurabilityLevel) error {
+	timeout, err := opts.timeout()
+	if err != nil {
+		return err
+	}
 	bucket, err := c.getBucket(bucketName)
 	if err != nil {
 		return fmt.Errorf("failed to create bucket connection for remove. Err: %w", err)
 	}
 	col := bucket.Scope(scope).Collection(collection)
-
-	// Remove with Durability
 	_, err = col.Remove(docID, &gocb.RemoveOptions{
-		Timeout:         100 * time.Millisecond,
-		DurabilityLevel: gocb.DurabilityLevelMajority,
+		Timeout:         timeout,
+		DurabilityLevel: durability,
 	})
-	if err != nil {
-		return err
-	}
-	return nil
+	return err
 }
 
 // InsertBatch inserts multiple documents (keyed by document ID) in a single

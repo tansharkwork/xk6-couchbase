@@ -8,7 +8,7 @@ K6 extension to perform tests on couchbase.
 - Supports Batch insertion.
 - Supports findOne (Fetch by primary key)
 - Supports findMany (Batch fetch by primary keys)
-- Supports deleting a document by id
+- Supports deleting a document by id, with or without majority durability
 - Supports upserts
 - Testing query performance
 - Prepared statement query performance
@@ -204,11 +204,20 @@ import xk6_couchbase from 'k6/x/couchbase';
 
 const client = xk6_couchbase.newClient('localhost', '<username>', '<password>');
 export default () => {
+    // Plain delete. The optional options object sets the timeout (default "1s").
+    client.remove("test", "_default", "_default", "002wPJwiJArcUpz");
+    client.remove("test", "_default", "_default", "002wPJwiJArcUpz", { timeout: "2s" });
 
-    client.remove("test", "_default", "_default", "002wPJwiJArcUpz", doc);
+    // Delete that waits for a majority of replicas to acknowledge it (default "1s").
+    client.removeWithDurability("test", "_default", "_default", "002wPJwiJArcUpz", { timeout: "5s" });
 }
 
 ```
+
+`removeWithDurability` requires a bucket whose replicas the cluster can hold:
+majority durability needs a majority of the document's copies (replicas + 1),
+and each replica lives on a different node. On a single node, use a bucket with
+0 replicas; otherwise the delete fails with "durability impossible".
 
 ### Query test
 
@@ -389,3 +398,6 @@ The size is allocated per connection, so large values multiply with
 Without certificates, missing username/password now fails at construction.
 The positional `newClient(host, username, password)` remains a password API.
 
+`remove` no longer requests majority durability, and its timeout changed from
+a fixed 100ms to a configurable default of 1s. Use `removeWithDurability` for
+the previous durability behavior. Existing `remove` calls need no changes.
