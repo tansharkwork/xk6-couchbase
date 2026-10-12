@@ -1,24 +1,55 @@
-# CouchBase k6 extension
+# Couchbase k6 extension
 
-K6 extension to perform tests on couchbase.
+A [k6](https://k6.io) extension (`k6/x/couchbase`) for load testing Couchbase.
 
-## Currently Supported Commands
+This repository, [tansharkwork/xk6-couchbase](https://github.com/tansharkwork/xk6-couchbase),
+is a fork of [thotasrinath/xk6-couchbase](https://github.com/thotasrinath/xk6-couchbase).
+Scripts written for the upstream extension run here unchanged, apart from the
+behavior differences listed in
+[Differences from the upstream extension](#differences-from-the-upstream-extension).
 
-- Supports inserting a document.
-- Supports Batch insertion.
-- Supports findOne (Fetch by primary key)
-- Supports findMany (Batch fetch by primary keys)
-- Supports deleting a document by id, with or without majority durability
-- Supports upserts
-- Testing query performance
-- Prepared statement query performance
+## About this fork
+
+The fork adds:
+
+- Client-certificate (mTLS) authentication for Couchbase Enterprise, with
+  verified TLS and an optional custom CA ([details](#client-certificate-authentication)).
+- `removeWithDurability`, with `remove` and `removeWithDurability` both taking
+  a configurable timeout.
+- An `exists` that returns `true` or `false`.
+- Full Couchbase connection strings (`couchbase://`, `couchbases://`, multiple
+  hosts, query options) and a working `connectionBufferSizeBytes` argument.
+- Make targets and scripts that run every example against local Couchbase
+  Community and Enterprise containers.
+
+The Go module path is still `github.com/thotasrinath/xk6-couchbase`, which keeps
+the fork easy to merge upstream. Build it with the `--with` replacement shown
+under [For Use](#for-use); the JavaScript import stays `k6/x/couchbase`.
+
+## Supported operations
+
+| Operation | JavaScript |
+| --- | --- |
+| Insert one document | `insert(bucket, scope, collection, id, doc)` |
+| Insert many documents | `insertBatch(bucket, scope, collection, { id: doc, ... })` |
+| Upsert one document | `upsert(bucket, scope, collection, id, doc)` |
+| Get one document | `findOne(bucket, scope, collection, id)` |
+| Get many documents | `findMany(bucket, scope, collection, [ids])` |
+| Check whether a document exists | `exists(bucket, scope, collection, id)`, returns `true`/`false` |
+| Delete a document | `remove(bucket, scope, collection, id, { timeout })` |
+| Delete with majority durability | `removeWithDurability(bucket, scope, collection, id, { timeout })` |
+| N1QL query | `find(statement)` |
+| Parameterized N1QL query | `findByPreparedStmt(statement, ...params)` |
+
+Clients are created with `newClient`, `newClientWithSharedConnection`, or
+`newClientPerVU`; see [Client with options](#client-with-options).
 
 ## Build Instructions
 
 ### For Development
 
 ```shell
-git clone git@github.com:thotasrinath/xk6-couchbase.git
+git clone git@github.com:tansharkwork/xk6-couchbase.git
 cd xk6-couchbase
 make build
 ```
@@ -30,12 +61,20 @@ lint, example validation).
 
 ### For Use
 
-Install xk6, then build a k6 binary with the published extension:
+Install xk6, then build a k6 binary with this fork's extension:
 
 ```shell
 go install go.k6.io/xk6/cmd/xk6@latest
-xk6 build --with github.com/thotasrinath/xk6-couchbase@latest
+xk6 build --output xk6-couchbase \
+  --with github.com/thotasrinath/xk6-couchbase=github.com/tansharkwork/xk6-couchbase@v0.1.0
 ```
+
+The `module=replacement` form is required because the module path still names
+the upstream repository. Without the replacement,
+`--with github.com/thotasrinath/xk6-couchbase@latest` builds the upstream
+extension, which lacks this fork's features. Use a newer
+[release tag](https://github.com/tansharkwork/xk6-couchbase/tags) when one is
+available, or `@master` for the latest unreleased changes.
 
 ## Development
 
@@ -95,11 +134,11 @@ function makeId(length) {
 
 ```
 
-##### Below is the example commands to test the script
+To run the bundled version of this script against your cluster:
 
 ```bash
-# Update examples/test-insert.js with cluster credentials and bucket name
- ./xk6-couchbase run --vus 10 --duration 30s examples/test-insert.js
+./xk6-couchbase run --vus 10 --duration 30s \
+  -e CB_HOST=localhost -e CB_USER=Administrator -e CB_PASS=password examples/test-insert.js
 ```
 
 ### Batch Insert Documents
@@ -228,10 +267,9 @@ import xk6_couchbase from 'k6/x/couchbase';
 
 const client = xk6_couchbase.newClient('localhost', '<username>', '<password>');
 export default () => {
-    var res = client.find("select * from test._default._default  use keys \"00096zszpZaT47X\"");
-
-    //console.log(res);
-
+    // Returns the last row of the result.
+    var res = client.find("select * from test._default._default use keys \"00096zszpZaT47X\"");
+    console.log(res);
 }
 ```
 
@@ -243,16 +281,15 @@ import xk6_couchbase from 'k6/x/couchbase';
 
 const client = xk6_couchbase.newClient('localhost', '<username>', '<password>');
 export default () => {
-    var res = client.findByPreparedStmt("select * from test._default._default  use keys \"00096zszpZaT47X\"");
-
-    //console.log(res);
-
+    // Positional parameters follow the statement. Returns the last row of the result.
+    var res = client.findByPreparedStmt("select * from test._default._default use keys $1", "00096zszpZaT47X");
+    console.log(res);
 }
 ```
 
 ### Upsert test
 
-#### Initial data load is expected. Data with sequential Id's could be generated with below script. File - examples/load-sequential-data.js
+#### Initial data load is expected. Data with sequential IDs can be generated with this script (`examples/load-sequential-data.js`)
 
 ```js
 import xk6_couchbase from 'k6/x/couchbase';
@@ -284,7 +321,7 @@ export default function () {
 }
 ```
 
-#### Upsert test script to generate random id in range and excute Upsert. File - examples/test-upsert.js
+#### Upsert a random ID within the loaded range (`examples/test-upsert.js`)
 
 ```js
 import xk6_couchbase from 'k6/x/couchbase';
@@ -308,16 +345,21 @@ export default () => {
 
 ### Client with options
 
-Default NewClient is a good start to get familiar with the extension with little wiring and get going.  For refined flexibility of connection management during the tests,  following additional interfaces are provided:
+`newClient(host, username, password)` is the quickest way to get started. It
+creates a dedicated connection with password authentication. For more control
+over connections, use:
 
-* NewClientWithSharedConnection: Shares a single connection across all the VUs and maximizes the QPS without affecting client resources.
-* NewClientPerVU: Creates new client connection for each VU. Useful for testing max number of connections that the cluster can handle.
+* `newClientWithSharedConnection(config, bucketsToWarm, readinessTimeout, bufferSizeBytes)`:
+  shares one connection across all VUs, maximizing QPS without exhausting client resources.
+* `newClientPerVU(config, bucketsToWarm, readinessTimeout, bufferSizeBytes)`:
+  creates a connection for each VU. Useful for testing how many connections the cluster can handle.
 
-In addition to controlling number of connections, both the functions provide:
+`config` is `{ hostname, username, password }`, or `{ hostname, tls: {...} }` for
+[client certificates](#client-certificate-authentication). Both constructors can:
 
-* Ability to pre-warm the buckets as part of initialization.
-* Ability to set timeout duration for bucket readiness (WaitUntilReady timeout).
-* Ability to control the connection buffer size with the fourth constructor argument, in bytes.
+* Pre-warm buckets during initialization (`bucketsToWarm`).
+* Set the bucket readiness timeout, such as `"5s"`.
+* Set the connection buffer size in bytes (optional fourth argument, default 2048).
 
 #### Example for wiring client with shared connection across VUs
 
@@ -385,7 +427,11 @@ const client = couchbase.newClientWithSharedConnection(config, ['test'], '5s', 4
 - Shared certificates load once; restart the run to rotate them. Warming a
   bucket or performing an operation is required to verify server authentication.
 
-### Compatibility changes
+## Differences from the upstream extension
+
+If you are moving scripts from
+[thotasrinath/xk6-couchbase](https://github.com/thotasrinath/xk6-couchbase),
+these behaviors differ:
 
 Shared mode previously ignored later settings. It now rejects a different host,
 credentials, TLS file paths, or effective buffer size. Use identical settings

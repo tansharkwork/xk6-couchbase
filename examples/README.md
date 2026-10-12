@@ -49,7 +49,8 @@ extension linked in:
 ```bash
 # from the repository root
 make build
-# or, directly:
+# or, directly (the module path still names the upstream repository; `=.`
+# replaces it with this checkout):
 xk6 build --output xk6-couchbase --with github.com/thotasrinath/xk6-couchbase=.
 ```
 
@@ -82,9 +83,9 @@ curl -s -X POST $CB/pools/default -d memoryQuota=512 -d indexMemoryQuota=512
 curl -s -X POST $CB/node/controller/setupServices -d services=kv%2Cn1ql%2Cindex
 # admin credentials
 curl -s -X POST $CB/settings/web -d port=8091 -d username=$ADMIN -d password=$PASS
-# create the 'test' bucket
+# create the 'test' bucket (0 replicas so removeWithDurability works on one node)
 curl -s -u $ADMIN:$PASS -X POST $CB/pools/default/buckets \
-  -d name=test -d bucketType=couchbase -d ramQuota=256 -d flushEnabled=1
+  -d name=test -d bucketType=couchbase -d ramQuota=256 -d flushEnabled=1 -d replicaNumber=0
 ```
 
 > Note: Couchbase forbids `<` and `>` in usernames, so the `<username>`
@@ -128,7 +129,9 @@ cd "$(git rev-parse --show-toplevel)"
 for f in examples/test-insert.js \
          examples/test-insertbatch.js \
          examples/test-upsert.js \
+         examples/test-remove.js \
          examples/test-findone.js \
+         examples/test-exists.js \
          examples/test-find.js \
          examples/test-new-with-conn-per-vu.js \
          examples/test-new-with-shared-conn.js; do
@@ -159,7 +162,7 @@ want a populated bucket:
 | `test-new-with-conn-per-vu.js`  | A dedicated connection per VU (max-connections testing)  |
 | `test-new-with-shared-conn.js`  | A single shared connection across all VUs (max QPS)      |
 | `load-sequential-data.js`       | Bulk load with sequential numeric IDs                    |
-| `test-client-cert.js`            | Certificate-authenticated KV and query operations (Enterprise only) |
+| `test-client-cert.js`           | Certificate-authenticated KV and query operations (Enterprise only) |
 
 ## Common flags
 
