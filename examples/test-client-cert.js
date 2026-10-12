@@ -1,4 +1,4 @@
-import couchbase from 'k6/x/couchbase';
+import xk6_couchbase from 'k6/x/couchbase';
 import { check } from 'k6';
 
 export const options = {
@@ -27,8 +27,8 @@ const config = {
     },
 };
 const client = mode === 'shared'
-    ? couchbase.newClientWithSharedConnection(config, [bucket], '5s')
-    : couchbase.newClientPerVU(config, [bucket], '5s');
+    ? xk6_couchbase.newClientWithSharedConnection(config, [bucket], '5s')
+    : xk6_couchbase.newClientPerVU(config, [bucket], '5s');
 
 export default function () {
     const id = `client-cert-example-${__VU}-${__ITER}`;
