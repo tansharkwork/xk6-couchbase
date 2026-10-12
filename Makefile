@@ -73,8 +73,21 @@ couchbase-down: ## Remove the local Couchbase container created by couchbase-up
 	$(CB_ENV) ./scripts/couchbase.sh down
 
 .PHONY: validate
-validate: $(BINARY) couchbase-up ## Build, ensure Couchbase, and run every example end-to-end
+validate: $(BINARY) couchbase-up ## Build, ensure Couchbase, and run password examples end-to-end
 	$(CB_ENV) ./scripts/run-examples.sh
+
+# Enterprise certificate acceptance is opt-in and separate from Community validation.
+.PHONY: couchbase-enterprise-up
+couchbase-enterprise-up: ## Start and configure the local Enterprise certificate fixture
+	./scripts/couchbase-enterprise.sh up
+
+.PHONY: couchbase-enterprise-down
+couchbase-enterprise-down: ## Remove the managed Enterprise container and test certificates
+	./scripts/couchbase-enterprise.sh down
+
+.PHONY: validate-cert
+validate-cert: $(BINARY) couchbase-enterprise-up ## Run positive and negative Enterprise certificate acceptance
+	BIN="$(abspath $(BINARY))" ./scripts/run-cert-examples.sh
 
 .PHONY: clean
 clean: ## Remove build artifacts

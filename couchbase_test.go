@@ -1,10 +1,12 @@
 package xk6_couchbase
 
 import (
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
-	k6modules "go.k6.io/k6/v2/js/modules"
 	"go.k6.io/k6/v2/js/modulestest"
 )
 
@@ -34,117 +36,50 @@ func TestParseStringToDuration(t *testing.T) {
 	}
 }
 
-// TestModuleWiring verifies the k6 module lifecycle: a single RootModule, a
-// per-VU ModuleInstance that points back to that root, and a Default export
-// that is a *CouchBase carrying the same shared root.
-func TestModuleWiring(t *testing.T) {
-	t.Parallel()
-
-	root := New()
-	if root == nil {
-		t.Fatal("New() returned nil")
-	}
-
-	rt := modulestest.NewRuntime(t)
-	inst := root.NewModuleInstance(rt.VU)
-
-	mi, ok := inst.(*ModuleInstance)
-	if !ok {
-		t.Fatalf("NewModuleInstance returned %T, want *ModuleInstance", inst)
-	}
-	if mi.root != root {
-		t.Fatal("ModuleInstance does not point to the root module")
-	}
-	if mi.vu != rt.VU {
-		t.Fatal("ModuleInstance did not capture the VU")
-	}
-
-	exports := inst.Exports()
-	cb, ok := exports.Default.(*CouchBase)
-	if !ok {
-		t.Fatalf("Default export is %T, want *CouchBase", exports.Default)
-	}
-	if cb.root != root {
-		t.Fatal("exported CouchBase does not share the root module")
-	}
-}
-
-// TestSharedConnectionSingleton is the core guarantee of the refactor: two VUs
-// (two ModuleInstances built from the same root) must share a single client in
-// shared-connection mode. gocb.Connect is lazy, so no live cluster is needed.
+// Module instances from one k6 run share a client; independent runs must not.
 func TestSharedConnectionSingleton(t *testing.T) {
 	t.Parallel()
 
 	root := New()
-	cbVU1 := couchbaseFor(t, root)
-	cbVU2 := couchbaseFor(t, root)
-
-	dbConfig := DBConfig{Hostname: "127.0.0.1", Username: "u", Password: "p"}
-	opts := options{DoConnectionPerVU: false}
-
-	client1, err := cbVU1.getCouchbaseInstance(dbConfig, opts)
-	if err != nil {
-		t.Fatalf("VU1 shared connect: %v", err)
-	}
-	client2, err := cbVU2.getCouchbaseInstance(dbConfig, opts)
-	if err != nil {
-		t.Fatalf("VU2 shared connect: %v", err)
-	}
-
-	if client1 != client2 {
-		t.Fatal("shared mode returned different clients across VUs; singleton not shared")
-	}
-	if root.singletonClient != client1 {
-		t.Fatal("root.singletonClient not populated with the shared client")
-	}
+	expression := `couchbase.newClientWithSharedConnection({hostname: "127.0.0.1", username: "u", password: "p"}, [], "1s")`
+	client1 := clientFromModule(t, root, expression)
 	t.Cleanup(func() { _ = client1.Close() })
+	client2 := clientFromModule(t, root, expression)
+	if client1 != client2 {
+		t.Fatal("shared mode returned different clients across VUs")
+	}
+	otherRun := clientFromModule(t, New(), expression)
+	t.Cleanup(func() { _ = otherRun.Close() })
+	if otherRun == client1 {
+		t.Fatal("independent module roots shared a connection")
+	}
+
+	cbVU2 := couchbaseFor(t, root)
+	changed := DBConfig{Hostname: "127.0.0.1", Username: "u", Password: "different"}
+	if client, err := cbVU2.NewClientWithSharedConnection(changed, nil, "1s", 0); err == nil || client != nil {
+		t.Fatal("shared mode accepted different password credentials")
+	}
 }
 
-// TestPerVUConnection verifies the opposite mode: each call gets its own client.
+// Dedicated constructors must neither reuse clients nor seed the shared singleton.
 func TestPerVUConnection(t *testing.T) {
 	t.Parallel()
 
 	root := New()
-	cb := couchbaseFor(t, root)
-
-	dbConfig := DBConfig{Hostname: "127.0.0.1", Username: "u", Password: "p"}
-	opts := options{DoConnectionPerVU: true}
-
-	client1, err := cb.getCouchbaseInstance(dbConfig, opts)
-	if err != nil {
-		t.Fatalf("per-VU connect 1: %v", err)
-	}
-	client2, err := cb.getCouchbaseInstance(dbConfig, opts)
-	if err != nil {
-		t.Fatalf("per-VU connect 2: %v", err)
-	}
-
+	expression := `couchbase.newClientPerVU({hostname: "127.0.0.1", username: "dedicated", password: "p"}, [], "1s")`
+	client1 := clientFromModule(t, root, expression)
+	t.Cleanup(func() { _ = client1.Close() })
+	client2 := clientFromModule(t, root, expression)
+	t.Cleanup(func() { _ = client2.Close() })
 	if client1 == client2 {
-		t.Fatal("per-VU mode reused a client; expected distinct connections")
+		t.Fatal("per-VU mode reused a client")
 	}
-	if root.singletonClient != nil {
-		t.Fatal("per-VU mode should not populate the shared singleton")
-	}
-	t.Cleanup(func() { _ = client1.Close(); _ = client2.Close() })
-}
 
-// TestNewClientWithOptionsDefaultsBufferSize verifies the buffer-size default is
-// applied and the client is wired with the supplied options.
-func TestNewClientWithOptionsDefaultsBufferSize(t *testing.T) {
-	t.Parallel()
-
-	cb := couchbaseFor(t, New())
-	dbConfig := DBConfig{Hostname: "127.0.0.1", Username: "u", Password: "p"}
-
-	client, err := cb.NewClientWithOptions(dbConfig, options{DoConnectionPerVU: true})
-	if err != nil {
-		t.Fatalf("NewClientWithOptions: %v", err)
+	shared := clientFromModule(t, root, `couchbase.newClientWithSharedConnection({hostname: "127.0.0.1", username: "shared", password: "p"}, [], "1s")`)
+	t.Cleanup(func() { _ = shared.Close() })
+	if shared == client1 || shared == client2 {
+		t.Fatal("dedicated mode populated the shared connection")
 	}
-	if client.options.ConnectionBufferSizeBytes != defaultConnectionBufferSizeBytes {
-		t.Fatalf("buffer size = %d, want default %d",
-			client.options.ConnectionBufferSizeBytes, defaultConnectionBufferSizeBytes)
-	}
-	t.Cleanup(func() { _ = client.Close() })
 }
 
 // couchbaseFor spins up a real VU-scoped CouchBase export from the given root,
@@ -160,5 +95,116 @@ func couchbaseFor(t *testing.T, root *RootModule) *CouchBase {
 	return cb
 }
 
-// Compile-time guard kept alongside the runtime checks in couchbase.go.
-var _ k6modules.Module = (*RootModule)(nil)
+func clientFromModule(t *testing.T, root *RootModule, expression string) *Client {
+	t.Helper()
+	rt := modulestest.NewRuntime(t)
+	if err := rt.SetupModuleSystem(map[string]any{"k6/x/couchbase": root}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	value, err := rt.RunOnEventLoop(`const couchbase = require("k6/x/couchbase"); ` + expression)
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, ok := value.Export().(*Client)
+	if !ok {
+		t.Fatalf("constructor returned %T, want a Client", value.Export())
+	}
+	return client
+}
+
+func TestSharedConnectionBufferConfiguration(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name              string
+		host              string
+		buffer            int
+		equivalentHost    string
+		equivalentBuffer  int
+		conflictingBuffer int
+	}{
+		{name: "constructor overrides URI", host: "127.0.0.1?kv_buffer_size=8192", buffer: 4096, equivalentHost: "127.0.0.1", equivalentBuffer: 4096, conflictingBuffer: 8192},
+		{name: "URI when constructor is omitted", host: "127.0.0.1?kv_buffer_size=4096", equivalentHost: "127.0.0.1", equivalentBuffer: 4096, conflictingBuffer: 8192},
+		{name: "nonpositive values use the default", host: "127.0.0.1", equivalentHost: "127.0.0.1", equivalentBuffer: -1, conflictingBuffer: 2 * defaultConnectionBufferSizeBytes},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			cb := couchbaseFor(t, New())
+			config := DBConfig{Hostname: tt.host, Username: "u", Password: "p"}
+			first, err := cb.NewClientWithOptions(config, options{ConnectionBufferSizeBytes: tt.buffer})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = first.Close() })
+			config.Hostname = tt.equivalentHost
+			reused, err := cb.NewClientWithOptions(config, options{ConnectionBufferSizeBytes: tt.equivalentBuffer})
+			if err != nil || reused != first {
+				t.Fatalf("equivalent buffer settings did not reuse the shared client: %v", err)
+			}
+			if client, err := cb.NewClientWithOptions(config, options{ConnectionBufferSizeBytes: tt.conflictingBuffer}); err == nil || client != nil {
+				t.Fatal("different buffer sizes silently reused a shared client")
+			}
+		})
+	}
+}
+
+func TestInvalidURIBufferSize(t *testing.T) {
+	t.Parallel()
+	for _, query := range []string{"kv_buffer_size=abc", "kv_buffer_size=0", "kv_buffer_size=-1", "kv_buffer_size=1&kv_buffer_size=2"} {
+		t.Run(query, func(t *testing.T) {
+			t.Parallel()
+			config := DBConfig{Hostname: "127.0.0.1?" + query, Username: "u", Password: "p"}
+			if client, err := couchbaseFor(t, New()).NewClientPerVU(config, nil, "1s", 0); err == nil || client != nil {
+				t.Fatal("invalid URI kv_buffer_size was accepted")
+			}
+			// A positive constructor value replaces the URI value entirely.
+			client, err := couchbaseFor(t, New()).NewClientPerVU(config, nil, "1s", 4096)
+			if err != nil {
+				t.Fatalf("constructor buffer size did not override the URI value: %v", err)
+			}
+			_ = client.Close()
+		})
+	}
+}
+
+func TestSharedInitializationFailure(t *testing.T) {
+	t.Parallel()
+	cb := couchbaseFor(t, New())
+	config := DBConfig{
+		Hostname: "127.0.0.1", Username: "u", Password: "p",
+		TLS: &TLSConfig{CACertPath: filepath.Join(t.TempDir(), "missing-ca.pem")},
+	}
+	if client, err := cb.NewClientWithSharedConnection(config, nil, "1s", 0); client != nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("expected the initial missing-file failure, got client=%v err=%v", client, err)
+	}
+	changed := DBConfig{Hostname: "127.0.0.2", Username: "other", Password: "p"}
+	if client, err := cb.NewClientWithSharedConnection(changed, nil, "1s", 0); client != nil || !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("shared initialization failure was replaced by a configuration conflict: %v", err)
+	}
+}
+
+func TestTLSMisspelledFieldsWithoutCredentials(t *testing.T) {
+	t.Parallel()
+	rt := modulestest.NewRuntime(t)
+	if err := rt.SetupModuleSystem(map[string]any{"k6/x/couchbase": New()}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err := rt.RunOnEventLoop(`
+		const couchbase = require("k6/x/couchbase");
+		const newClientPerVU = couchbase.newClientPerVU.bind(couchbase);
+		for (const tls of [{clientCert: "unused.pem"}, {ca_cert_path: "unused.pem"}]) {
+			let rejected = false;
+			try {
+				const client = newClientPerVU({hostname: "127.0.0.1", tls}, [], "1s");
+				client.close();
+			} catch (error) {
+				if (!String(error).includes("provide both username and password")) throw error;
+				rejected = true;
+			}
+			if (!rejected) throw new Error("TLS configuration without authentication was accepted");
+		}
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -1,0 +1,287 @@
+package xk6_couchbase
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"errors"
+	"io"
+	"math/big"
+	"net"
+	"os"
+	"path/filepath"
+	"sync"
+	"testing"
+	"time"
+)
+
+func TestTLSConfigurationErrors(t *testing.T) {
+	t.Parallel()
+	fixture := newTLSFixture(t)
+	invalid := filepath.Join(t.TempDir(), "invalid.pem")
+	if err := os.WriteFile(invalid, []byte("not a certificate"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing.pem")
+	other := newTLSFixture(t)
+	tests := []struct {
+		name    string
+		config  DBConfig
+		missing bool
+	}{
+		{name: "missing key", config: DBConfig{Hostname: "127.0.0.1", TLS: &TLSConfig{ClientCertPath: fixture.config.ClientCertPath}}},
+		{name: "missing certificate", config: DBConfig{Hostname: "127.0.0.1", TLS: &TLSConfig{ClientKeyPath: fixture.config.ClientKeyPath}}},
+		{name: "plaintext TLS", config: DBConfig{Hostname: "couchbase://127.0.0.1", TLS: &fixture.config}},
+		{name: "mixed username", config: DBConfig{Hostname: "127.0.0.1", Username: "u", TLS: &fixture.config}},
+		{name: "mixed password", config: DBConfig{Hostname: "127.0.0.1", Password: "p", TLS: &fixture.config}},
+		{name: "unsupported scheme", config: DBConfig{Hostname: "https://127.0.0.1", TLS: &fixture.config}},
+		{name: "missing host", config: DBConfig{TLS: &fixture.config}},
+		{name: "empty TLS authentication", config: DBConfig{Hostname: "127.0.0.1", TLS: &TLSConfig{}}},
+		{name: "missing password", config: DBConfig{Hostname: "127.0.0.1", Username: "u", TLS: &TLSConfig{}}},
+		{name: "missing username", config: DBConfig{Hostname: "127.0.0.1", Password: "p", TLS: &TLSConfig{}}},
+		{name: "missing CA file", config: DBConfig{Hostname: "127.0.0.1", Username: "u", Password: "p", TLS: &TLSConfig{CACertPath: missing}}, missing: true},
+		{name: "invalid CA PEM", config: DBConfig{Hostname: "127.0.0.1", Username: "u", Password: "p", TLS: &TLSConfig{CACertPath: invalid}}},
+		{name: "missing key file", config: DBConfig{Hostname: "127.0.0.1", TLS: &TLSConfig{ClientCertPath: fixture.config.ClientCertPath, ClientKeyPath: missing}}, missing: true},
+		{name: "invalid client PEM", config: DBConfig{Hostname: "127.0.0.1", TLS: &TLSConfig{ClientCertPath: invalid, ClientKeyPath: fixture.config.ClientKeyPath}}},
+		{name: "mismatched key", config: DBConfig{Hostname: "127.0.0.1", TLS: &TLSConfig{ClientCertPath: fixture.config.ClientCertPath, ClientKeyPath: other.config.ClientKeyPath}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			client, err := couchbaseFor(t, New()).NewClientPerVU(tt.config, nil, "1s", 0)
+			if client != nil {
+				_ = client.Close()
+				t.Fatal("invalid TLS configuration returned a client")
+			}
+			if err == nil {
+				t.Fatal("invalid TLS configuration was accepted")
+			}
+			if tt.missing && !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("missing file error was not preserved: %v", err)
+			}
+		})
+	}
+}
+
+func TestSharedTLSConfiguration(t *testing.T) {
+	t.Parallel()
+	fixture := newTLSFixture(t)
+	root := New()
+	cb := couchbaseFor(t, root)
+	config := DBConfig{Hostname: "127.0.0.1", TLS: &fixture.config}
+	first, err := cb.NewClientWithSharedConnection(config, nil, "1s", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = first.Close() })
+
+	for _, changed := range []DBConfig{
+		{Hostname: "127.0.0.2", TLS: &fixture.config},
+		{Hostname: "127.0.0.1", Username: "u", Password: "p"},
+		{Hostname: "127.0.0.1", TLS: &TLSConfig{CACertPath: fixture.config.CACertPath}},
+		{Hostname: "127.0.0.1", TLS: &TLSConfig{CACertPath: "other-ca.pem", ClientCertPath: fixture.config.ClientCertPath, ClientKeyPath: fixture.config.ClientKeyPath}},
+		{Hostname: "127.0.0.1", TLS: &TLSConfig{CACertPath: fixture.config.CACertPath, ClientCertPath: "other-cert.pem", ClientKeyPath: "other-key.pem"}},
+	} {
+		client, err := cb.NewClientWithSharedConnection(changed, nil, "1s", 0)
+		if err == nil || client != nil {
+			t.Fatal("a conflicting shared authentication configuration was accepted")
+		}
+	}
+
+	// Shared mode must reuse the loaded identity, not reopen the files per VU.
+	if err := os.Remove(fixture.config.ClientKeyPath); err != nil {
+		t.Fatal(err)
+	}
+	equivalent := fixture.config
+	// An absolute dot-segment alias stays on the same volume on Windows.
+	separator := string(filepath.Separator)
+	equivalent.ClientCertPath = filepath.Dir(equivalent.ClientCertPath) + separator + "." + separator + filepath.Base(equivalent.ClientCertPath)
+	equivalentConfig := DBConfig{Hostname: "couchbases://127.0.0.1?kv_buffer_size=2048", TLS: &equivalent}
+	var wg sync.WaitGroup
+	for range 8 {
+		vu := couchbaseFor(t, root)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			client, err := vu.NewClientWithSharedConnection(equivalentConfig, nil, "1s", 0)
+			if err != nil || client != first {
+				t.Errorf("equivalent shared configuration did not reuse the initialized connection: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+}
+
+// These are real SDK-to-TLS-server handshakes, not a Couchbase protocol emulator.
+// They prove certificate presentation and verification, not database authorization.
+func TestSDKCertificateHandshake(t *testing.T) {
+	t.Parallel()
+	for _, name := range []string{"valid identity", "untrusted server", "hostname mismatch", "untrusted client"} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newTLSFixture(t)
+			serverCert := fixture.server
+			clientCAs := fixture.roots
+			if name == "hostname mismatch" {
+				serverCert = fixture.issue(t, "wrong.example.test", x509.ExtKeyUsageServerAuth, nil)
+			}
+			if name == "untrusted server" {
+				fixture.config.CACertPath = newTLSFixture(t).config.CACertPath
+			}
+			if name == "untrusted client" {
+				clientCAs = newTLSFixture(t).roots
+			}
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = listener.Close() })
+			deadline := time.Now().Add(30 * time.Second)
+			if end, ok := t.Deadline(); ok && end.Add(-time.Second).Before(deadline) {
+				deadline = end.Add(-time.Second)
+			}
+			timer := time.NewTimer(time.Until(deadline))
+			defer timer.Stop()
+			if err := listener.(*net.TCPListener).SetDeadline(deadline); err != nil {
+				t.Fatal(err)
+			}
+			type handshake struct {
+				identity string
+				err      error
+			}
+			result := make(chan handshake, 1)
+			go func() {
+				for {
+					conn, err := listener.Accept()
+					if err != nil {
+						result <- handshake{err: err}
+						return
+					}
+					_ = conn.SetDeadline(deadline)
+					server := tls.Server(conn, &tls.Config{
+						Certificates: []tls.Certificate{serverCert},
+						ClientAuth:   tls.RequireAndVerifyClientCert,
+						ClientCAs:    clientCAs,
+						MinVersion:   tls.VersionTLS12,
+					})
+					err = server.Handshake()
+					_ = conn.Close()
+					// Bucket bootstrap can cancel an earlier cluster bootstrap socket.
+					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+						continue
+					}
+					if err != nil {
+						result <- handshake{err: err}
+						return
+					}
+					result <- handshake{identity: server.ConnectionState().PeerCertificates[0].Subject.CommonName}
+					return
+				}
+			}()
+
+			config := DBConfig{Hostname: "couchbases://" + listener.Addr().String() + "?enable_dns_srv=false", TLS: &fixture.config}
+			client, err := couchbaseFor(t, New()).NewClientPerVU(config, nil, "1s", 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() {
+				// Refuse reconnects before Close waits for the SDK's dialers.
+				_ = listener.Close()
+				_ = client.Close()
+			})
+			// Opening a bucket starts the SDK's KV bootstrap and TLS connection.
+			client.cluster.Bucket("test")
+			select {
+			case got := <-result:
+				if name == "valid identity" {
+					if got.err != nil || got.identity != "test-user" {
+						t.Fatalf("client identity was not authenticated: identity=%q err=%v", got.identity, got.err)
+					}
+				} else if got.err == nil || got.identity != "" {
+					t.Fatal("an invalid TLS peer completed an authenticated handshake")
+				} else if netErr, ok := got.err.(net.Error); ok && netErr.Timeout() {
+					t.Fatalf("handshake never reached peer verification: %v", got.err)
+				}
+			case <-timer.C:
+				t.Fatal("SDK did not attempt a TLS handshake")
+			}
+		})
+	}
+}
+
+type tlsFixture struct {
+	config TLSConfig
+	roots  *x509.CertPool
+	server tls.Certificate
+	ca     *x509.Certificate
+	key    *ecdsa.PrivateKey
+}
+
+func newTLSFixture(t *testing.T) *tlsFixture {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ca := &x509.Certificate{
+		SerialNumber: big.NewInt(1), Subject: pkix.Name{CommonName: "test-ca"},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, ca, ca, &key.PublicKey, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	caPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	fixture := &tlsFixture{ca: ca, key: key, roots: x509.NewCertPool()}
+	fixture.roots.AppendCertsFromPEM(caPEM)
+	fixture.server = fixture.issue(t, "test-server", x509.ExtKeyUsageServerAuth, net.ParseIP("127.0.0.1"))
+	client := fixture.issue(t, "test-user", x509.ExtKeyUsageClientAuth, nil)
+	keyDER, err := x509.MarshalPKCS8PrivateKey(client.PrivateKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	fixture.config = TLSConfig{
+		CACertPath: filepath.Join(dir, "ca.pem"), ClientCertPath: filepath.Join(dir, "client.pem"), ClientKeyPath: filepath.Join(dir, "client-key.pem"),
+	}
+	for path, content := range map[string][]byte{
+		fixture.config.CACertPath:     caPEM,
+		fixture.config.ClientCertPath: pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: client.Certificate[0]}),
+		fixture.config.ClientKeyPath:  pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER}),
+	} {
+		if err := os.WriteFile(path, content, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return fixture
+}
+
+func (fixture *tlsFixture) issue(t *testing.T, name string, usage x509.ExtKeyUsage, ip net.IP) tls.Certificate {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cert := &x509.Certificate{
+		SerialNumber: serial, Subject: pkix.Name{CommonName: name}, DNSNames: []string{name},
+		NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(time.Hour),
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{usage},
+	}
+	if ip != nil {
+		cert.IPAddresses = []net.IP{ip}
+	}
+	der, err := x509.CreateCertificate(rand.Reader, cert, fixture.ca, &key.PublicKey, fixture.key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}
+}

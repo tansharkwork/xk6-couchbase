@@ -7,7 +7,7 @@ reading it, so you can run any single example against a fresh bucket.
 ## Quick start (recommended)
 
 From the repository root, one command builds the binary, ensures a local
-Couchbase is up, and runs every example end-to-end:
+Couchbase is up, and runs the quick password examples end-to-end:
 
 ```bash
 make validate
@@ -102,8 +102,8 @@ curl -s -u Administrator:password http://localhost:8093/query/service \
 
 ## 3. Configure credentials
 
-Every example reads connection settings from environment variables, falling back
-to placeholders if unset:
+The password-authentication examples read connection settings from environment
+variables, falling back to placeholders if unset:
 
 | Variable        | Default       | Meaning                  |
 | --------------- | ------------- | ------------------------ |
@@ -157,6 +157,7 @@ want a populated bucket:
 | `test-new-with-conn-per-vu.js`  | A dedicated connection per VU (max-connections testing)  |
 | `test-new-with-shared-conn.js`  | A single shared connection across all VUs (max QPS)      |
 | `load-sequential-data.js`       | Bulk load with sequential numeric IDs                    |
+| `test-client-cert.js`            | Certificate-authenticated KV and query operations (Enterprise only) |
 
 ## Common flags
 
@@ -171,3 +172,71 @@ want a populated bucket:
 ```bash
 docker rm -f couchbase
 ```
+
+## Client-certificate authentication
+
+Run the repeatable Enterprise acceptance check from the repository root:
+
+```bash
+make validate-cert
+```
+
+Requires Docker, curl, and OpenSSL. Review the
+[Couchbase Enterprise license terms](https://www.couchbase.com/agreements/)
+before using the `couchbase:enterprise-8.0.0` image.
+
+The target builds k6 and runs `scripts/couchbase-enterprise.sh up`, then
+`scripts/run-cert-examples.sh`. Provisioning initializes KV, Query, and Index,
+creates `tls-auth-test`, generates and installs a test CA/server/client PKI,
+sets external addresses, and creates the certificate-mapped RBAC users without
+UI steps. Client-certificate handling is `enable`, permitting passwords too.
+Provisioning waits for TLS Query advertisement and a certificate-authenticated
+query of the test keyspace before starting k6.
+
+The dedicated container is `xk6-couchbase-enterprise-cert`. All ports bind to
+loopback: management 28091/38091, query 28093/38093, and KV 21210/21207.
+Stop other instances using these ports before running the target.
+`up` reuses its labelled container, credentials, and certificates.
+
+Test keys and `.certs/enterprise/connection.env` are gitignored. Certificate
+directories have mode 0700 and private files mode 0600. No system trust-store
+changes or certificate-verification bypass are needed. Never commit these files.
+
+The runner executes `test-client-cert.js` in `shared` and `per-vu` modes and
+requires an exact k6 exit code for each case:
+
+| Case | Expected exit | Meaning |
+| --- | --- | --- |
+| Mapped client certificate | 0 | KV and query checks pass |
+| Unmapped identity, expired certificate, untrusted issuer | 107 | Rejected before the bucket is ready |
+| Mapped user without write permission | 99 | Authenticated, but the write is denied |
+| Password login (`test-new-with-*` examples, plaintext) | 0 with no logged errors | Passwords still work in `enable` mode |
+
+Exact codes keep a broken fixture from passing a negative case. Missing fixture
+files fail preflight. `up` refuses to start if another process already holds
+the fixture's ports.
+
+For separate provisioning, reruns, and cleanup:
+
+```bash
+make couchbase-enterprise-up
+./scripts/run-cert-examples.sh
+make couchbase-enterprise-down
+```
+
+`down` removes the managed container and generated certificate state; repeated
+calls are safe. The target leaves the fixture running for inspection or reruns.
+It is separate from `make validate` and the default CI workflow.
+
+### Acceptance coverage
+
+| Check | Command or scenario |
+| --- | --- |
+| Module lifecycle, buffer configuration, and local TLS peer verification | `make test-race`; no Couchbase required |
+| Enterprise certificate-authenticated readiness, KV and query access | `make validate-cert`, both connection modes |
+| Unmapped, expired, untrusted and insufficient-permission client rejection | The same target; each must exit with its exact expected code |
+| Password compatibility over plaintext | `make validate-cert`, both connection modes |
+| Password over verified TLS | Not automated; the password examples have no `tls` option |
+| Certificate-only `mandatory` policy | Separate server configuration with required inter-node encryption |
+| Sustained-load connection counts and audit identity | Separate longer-running workload and server inspection |
+

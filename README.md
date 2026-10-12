@@ -46,17 +46,19 @@ make build      # build a k6 binary with this extension from local source
 make test       # run unit tests
 make check      # gofmt + go vet + test (pre-commit gate)
 make lint       # golangci-lint (see https://golangci-lint.run to install)
-make validate   # build + ensure local Couchbase + run every example end-to-end
+make validate   # build + ensure local Couchbase + run password examples end-to-end
+make validate-cert  # build + provision Enterprise + run certificate acceptance
 ```
 
-Unit tests cover the module lifecycle, the shared-connection singleton, and the
-per-VU connection behavior. They use k6's `modulestest` runtime and do not
-require a live Couchbase cluster (`gocb.Connect` is lazy), so `make test` runs
-anywhere.
+Tests exercise module lifecycle through JavaScript loading, shared/dedicated
+connection isolation, TLS configuration errors, and real local mutual-TLS
+handshakes. They generate certificates and require neither Couchbase nor Docker;
+database authorization and operations are verified separately with the examples.
 
-`make validate` runs the example scripts against a local Couchbase (starting a
-Docker container if one isn't already reachable). See
-[examples/README.md](examples/README.md) for details.
+`make validate` runs password examples against a local Couchbase, starting a
+Community container when needed. `make validate-cert` separately provisions
+Enterprise and checks certificate success and rejection cases; neither default
+CI nor `make validate` runs it. See [examples/README.md](examples/README.md).
 
 ## Examples
 
@@ -305,7 +307,7 @@ In addition to controlling number of connections, both the functions provide:
 
 * Ability to pre-warm the buckets as part of initialization.
 * Ability to set timeout duration for bucket readiness (WaitUntilReady timeout).
-* Ability to control the connection buffer size. By default couchbase client uses 20MB buffer size which limits the number of concurrent connections that can be created by a single client instance.
+* Ability to control the connection buffer size with the fourth constructor argument, in bytes.
 
 #### Example for wiring client with shared connection across VUs
 
@@ -340,3 +342,50 @@ export default () => {
 }
 
 ```
+
+## Client-certificate authentication
+
+The config-based constructors support local PEM files with Couchbase Enterprise.
+The [local acceptance recipe](examples/README.md#client-certificate-authentication)
+uses Enterprise 8.0; certificate authentication is not restricted to that release.
+
+```js
+import couchbase from 'k6/x/couchbase';
+
+const config = {
+    hostname: 'couchbases://127.0.0.1',
+    tls: {
+        caCertPath: '/path/to/server-ca.pem',
+        clientCertPath: '/path/to/client-cert.pem',
+        clientKeyPath: '/path/to/client-key.pem',
+    },
+};
+const client = couchbase.newClientWithSharedConnection(config, ['test'], '5s', 4096);
+// newClientPerVU accepts the same arguments.
+```
+
+- Supply a client certificate/key pair **or** both username/password, never both
+  authentication methods. Use the exact camelCase field names shown above.
+- `caCertPath` optionally replaces SDK default server trust with a PEM CA bundle.
+  Client keys must be unencrypted PEM. Server/hostname verification stays enabled.
+- A `tls` object selects TLS for bare hosts; explicit `couchbase://` is rejected.
+  CA-only TLS configuration supports password authentication over TLS.
+- Paths resolve from the k6 process working directory; files are not included
+  automatically in archives. Keep keys outside source control with private permissions.
+- Shared certificates load once; restart the run to rotate them. Warming a
+  bucket or performing an operation is required to verify server authentication.
+
+### Compatibility changes
+
+Shared mode previously ignored later settings. It now rejects a different host,
+credentials, TLS file paths, or effective buffer size. Use identical settings
+across VUs or dedicated clients. Cached creation failures take precedence over
+configuration-conflict errors; restart the run after a creation failure.
+
+`connectionBufferSizeBytes` is now applied: a positive constructor value overrides
+URI `kv_buffer_size`; otherwise the URI value or 2048-byte default applies.
+The size is allocated per connection, so large values multiply with
+`newClientPerVU`. A non-positive or non-numeric URI `kv_buffer_size` is rejected.
+Without certificates, missing username/password now fails at construction.
+The positional `newClient(host, username, password)` remains a password API.
+

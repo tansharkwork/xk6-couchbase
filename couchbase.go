@@ -25,9 +25,10 @@ const (
 // all VUs, namely the lazily-initialized singleton client used in shared
 // connection mode.
 type RootModule struct {
-	once            sync.Once
-	singletonClient *Client
-	errz            error
+	once             sync.Once
+	singletonClient  *Client
+	connectionConfig connectionConfig
+	errz             error
 }
 
 // ModuleInstance is created once per VU by k6. Each instance points back to the
@@ -73,9 +74,10 @@ type options struct {
 
 // DBConfig holds the connection details for a Couchbase cluster.
 type DBConfig struct {
-	Hostname string `json:"connection_string,omitempty"`
-	Username string `json:"-"`
-	Password string `json:"-"`
+	Hostname string     `json:"connection_string,omitempty"`
+	Username string     `json:"-"`
+	Password string     `json:"-"`
+	TLS      *TLSConfig `json:"tls,omitempty" js:"tls"`
 }
 
 // Client is a connected Couchbase client exposed to JS test scripts. It is
@@ -120,9 +122,6 @@ func (c *CouchBase) NewClientWithSharedConnection(dbConfig DBConfig, bucketsToWa
 // NewClientWithOptions returns a client configured with the given options,
 // optionally pre-warming the requested buckets.
 func (c *CouchBase) NewClientWithOptions(dbConfig DBConfig, opts options) (*Client, error) {
-	if opts.ConnectionBufferSizeBytes < 1 {
-		opts.ConnectionBufferSizeBytes = defaultConnectionBufferSizeBytes
-	}
 	client, err := c.getCouchbaseInstance(dbConfig, opts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create new couchbase connection with options for cluster %s. Err: %w", dbConfig.Hostname, err)
@@ -138,9 +137,9 @@ func (c *CouchBase) NewClientWithOptions(dbConfig DBConfig, opts options) (*Clie
 	return client, nil
 }
 
-// NewClient returns a client using the default options (shared connection). On
+// NewClient returns a dedicated client using password authentication. On
 // success it returns the *Client; on failure it returns an error value to the
-// JS runtime.
+// JS runtime. Use a config-based constructor for client certificates.
 func (c *CouchBase) NewClient(connectionString string, username string, password string) interface{} {
 	dbConfig := DBConfig{
 		Hostname: connectionString,
@@ -385,36 +384,35 @@ func (c *Client) connectBucketOrLoad(bucketName string) (*gocb.Bucket, error) {
 }
 
 func (c *CouchBase) getCouchbaseInstance(dbConfig DBConfig, opts options) (*Client, error) {
+	config, err := normalizeConnectionConfig(dbConfig, opts.ConnectionBufferSizeBytes)
+	if err != nil {
+		return nil, err
+	}
 	if opts.DoConnectionPerVU {
-		return instantiateNewConnection(dbConfig, opts)
+		return instantiateNewConnection(config, opts)
 	}
 
-	c.root.once.Do(
-		func() {
-			client, err := instantiateNewConnection(dbConfig, opts)
-			if err != nil {
-				c.root.errz = err
-				return
-			}
-			c.root.singletonClient = client
-		},
-	)
+	c.root.once.Do(func() {
+		c.root.connectionConfig = config
+		c.root.singletonClient, c.root.errz = instantiateNewConnection(config, opts)
+	})
+	if c.root.errz != nil {
+		return nil, c.root.errz
+	}
+	if config != c.root.connectionConfig {
+		return nil, fmt.Errorf("shared connection configuration differs from the first initialization; use the same host, credentials, TLS files, and buffer size or use newClientPerVU")
+	}
 	return c.root.singletonClient, c.root.errz
 }
 
-func instantiateNewConnection(dbConfig DBConfig, options options) (*Client, error) {
-	// For a secure cluster connection, use `couchbases://<your-cluster-ip>` instead.
-	connStr := fmt.Sprintf("couchbase://%s?kv_buffer_size=2048", dbConfig.Hostname)
-	// connStr := "couchbase://"+dbConfig.Hostname
-	cluster, err := gocb.Connect(connStr, gocb.ClusterOptions{
-		Authenticator: gocb.PasswordAuthenticator{
-			Username: dbConfig.Username,
-			Password: dbConfig.Password,
-		},
-		// TODO: Set timeoutConfig
-	})
+func instantiateNewConnection(config connectionConfig, options options) (*Client, error) {
+	clusterOptions, err := config.clusterOptions()
 	if err != nil {
-		return nil, fmt.Errorf("faile to instantiate new connection to couchbase cluster %s. Err: %w", dbConfig.Hostname, err)
+		return nil, err
+	}
+	cluster, err := gocb.Connect(config.connectionString, clusterOptions)
+	if err != nil {
+		return nil, fmt.Errorf("failed to instantiate couchbase connection: %w", err)
 	}
 
 	return &Client{cluster: cluster, options: options}, nil
