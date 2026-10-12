@@ -41,7 +41,7 @@ func TestSharedConnectionSingleton(t *testing.T) {
 	t.Parallel()
 
 	root := New()
-	expression := `couchbase.newClientWithSharedConnection({hostname: "127.0.0.1", username: "u", password: "p"}, [], "1s")`
+	expression := `xk6_couchbase.newClientWithSharedConnection({hostname: "127.0.0.1", username: "u", password: "p"}, [], "1s")`
 	client1 := clientFromModule(t, root, expression)
 	t.Cleanup(func() { _ = client1.Close() })
 	client2 := clientFromModule(t, root, expression)
@@ -66,7 +66,7 @@ func TestPerVUConnection(t *testing.T) {
 	t.Parallel()
 
 	root := New()
-	expression := `couchbase.newClientPerVU({hostname: "127.0.0.1", username: "dedicated", password: "p"}, [], "1s")`
+	expression := `xk6_couchbase.newClientPerVU({hostname: "127.0.0.1", username: "dedicated", password: "p"}, [], "1s")`
 	client1 := clientFromModule(t, root, expression)
 	t.Cleanup(func() { _ = client1.Close() })
 	client2 := clientFromModule(t, root, expression)
@@ -75,7 +75,7 @@ func TestPerVUConnection(t *testing.T) {
 		t.Fatal("per-VU mode reused a client")
 	}
 
-	shared := clientFromModule(t, root, `couchbase.newClientWithSharedConnection({hostname: "127.0.0.1", username: "shared", password: "p"}, [], "1s")`)
+	shared := clientFromModule(t, root, `xk6_couchbase.newClientWithSharedConnection({hostname: "127.0.0.1", username: "shared", password: "p"}, [], "1s")`)
 	t.Cleanup(func() { _ = shared.Close() })
 	if shared == client1 || shared == client2 {
 		t.Fatal("dedicated mode populated the shared connection")
@@ -101,7 +101,7 @@ func clientFromModule(t *testing.T, root *RootModule, expression string) *Client
 	if err := rt.SetupModuleSystem(map[string]any{"k6/x/couchbase": root}, nil, nil); err != nil {
 		t.Fatal(err)
 	}
-	value, err := rt.RunOnEventLoop(`const couchbase = require("k6/x/couchbase"); ` + expression)
+	value, err := rt.RunOnEventLoop(`const xk6_couchbase = require("k6/x/couchbase"); ` + expression)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,8 +190,8 @@ func TestTLSMisspelledFieldsWithoutCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := rt.RunOnEventLoop(`
-		const couchbase = require("k6/x/couchbase");
-		const newClientPerVU = couchbase.newClientPerVU.bind(couchbase);
+		const xk6_couchbase = require("k6/x/couchbase");
+		const newClientPerVU = xk6_couchbase.newClientPerVU.bind(xk6_couchbase);
 		for (const tls of [{clientCert: "unused.pem"}, {ca_cert_path: "unused.pem"}]) {
 			let rejected = false;
 			try {
@@ -241,8 +241,8 @@ func TestRemoveArgumentsFromJS(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := rt.RunOnEventLoop(`
-		const couchbase = require("k6/x/couchbase");
-		const client = couchbase.newClientPerVU({hostname: "127.0.0.1", username: "u", password: "p"}, [], "10ms");
+		const xk6_couchbase = require("k6/x/couchbase");
+		const client = xk6_couchbase.newClientPerVU({hostname: "127.0.0.1", username: "u", password: "p"}, [], "10ms");
 		const outcome = (call) => { try { call(); return "ok"; } catch (error) { return String(error); } };
 		const accepted = {
 			"no options": () => client.remove("b", "s", "c", "id"),
@@ -278,8 +278,8 @@ func TestExistsThrowsOnOperationFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err := rt.RunOnEventLoop(`
-		const couchbase = require("k6/x/couchbase");
-		const client = couchbase.newClientPerVU({hostname: "127.0.0.1", username: "u", password: "p"}, [], "10ms");
+		const xk6_couchbase = require("k6/x/couchbase");
+		const client = xk6_couchbase.newClientPerVU({hostname: "127.0.0.1", username: "u", password: "p"}, [], "10ms");
 		let result;
 		try {
 			result = client.exists("b", "s", "c", "id");

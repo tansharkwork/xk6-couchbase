@@ -402,7 +402,7 @@ The [local acceptance recipe](examples/README.md#client-certificate-authenticati
 uses Enterprise 8.0; certificate authentication is not restricted to that release.
 
 ```js
-import couchbase from 'k6/x/couchbase';
+import xk6_couchbase from 'k6/x/couchbase';
 
 const config = {
     hostname: 'couchbases://127.0.0.1',
@@ -412,7 +412,7 @@ const config = {
         clientKeyPath: '/path/to/client-key.pem',
     },
 };
-const client = couchbase.newClientWithSharedConnection(config, ['test'], '5s', 4096);
+const client = xk6_couchbase.newClientWithSharedConnection(config, ['test'], '5s', 4096);
 // newClientPerVU accepts the same arguments.
 ```
 
