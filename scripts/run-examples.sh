@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Run every example end-to-end against a Couchbase and report pass/fail.
+# Run password-authentication examples against Couchbase and report pass/fail.
 # Assumes ./xk6-couchbase is built and Couchbase is up (see couchbase.sh).
 #
 # Connection details come from env (with the same defaults as couchbase.sh):
@@ -23,6 +23,7 @@ fi
 
 # Quick, self-contained examples. load-sequential-data.js is excluded: it bulk
 # loads 100k docs (10 VUs x 10k iterations) and is meant to be run on its own.
+# test-client-cert.js is also excluded: it requires a configured Enterprise server.
 EXAMPLES=(
   test-insert.js
   test-insertbatch.js
