@@ -158,6 +158,7 @@ import xk6_couchbase from 'k6/x/couchbase';
 const client = xk6_couchbase.newClient('localhost', '<username>', '<password>');
 export default () => {
     // syntax :: client.exists("<db>", "<scope>", "<keyspace>", "<docId>");
+    // Returns true or false; throws only if the operation itself fails.
     var res = client.exists("test", "_default", "_default", "002wPJwiJArcUpz");
     console.log(res);
 }
@@ -401,3 +402,8 @@ The positional `newClient(host, username, password)` remains a password API.
 `remove` no longer requests majority durability, and its timeout changed from
 a fixed 100ms to a configurable default of 1s. Use `removeWithDurability` for
 the previous durability behavior. Existing `remove` calls need no changes.
+
+`exists` now returns `true` or `false`. It previously returned `undefined` for
+both present and missing documents. Scripts that ignore the result behave the
+same; scripts that branch on it now get the correct answer. It still throws only
+when the operation fails, never for a missing document.
