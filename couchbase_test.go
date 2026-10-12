@@ -208,3 +208,63 @@ func TestTLSMisspelledFieldsWithoutCredentials(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestRemoveTimeout(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		input string
+		want  time.Duration
+		err   bool
+	}{
+		{input: "", want: defaultRemoveTimeout},
+		{input: "250ms", want: 250 * time.Millisecond},
+		{input: "5s", want: 5 * time.Second},
+		{input: "0s", err: true},
+		{input: "-1s", err: true},
+		{input: "soon", err: true},
+	}
+	for _, tt := range tests {
+		got, err := RemoveOptions{Timeout: tt.input}.timeout()
+		if (err != nil) != tt.err || got != tt.want {
+			t.Errorf("timeout(%q) = %v, %v; want %v, error %v", tt.input, got, err, tt.want, tt.err)
+		}
+	}
+}
+
+// The trailing remove argument is optional and must tolerate the stray document
+// argument older README examples passed. Valid calls get past option parsing and
+// fail only at bucket readiness, because no cluster is running.
+func TestRemoveArgumentsFromJS(t *testing.T) {
+	t.Parallel()
+	rt := modulestest.NewRuntime(t)
+	if err := rt.SetupModuleSystem(map[string]any{"k6/x/couchbase": New()}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err := rt.RunOnEventLoop(`
+		const couchbase = require("k6/x/couchbase");
+		const client = couchbase.newClientPerVU({hostname: "127.0.0.1", username: "u", password: "p"}, [], "10ms");
+		const outcome = (call) => { try { call(); return "ok"; } catch (error) { return String(error); } };
+		const accepted = {
+			"no options": () => client.remove("b", "s", "c", "id"),
+			"stray document": () => client.remove("b", "s", "c", "id", {title: "doc"}),
+			"timeout": () => client.remove("b", "s", "c", "id", {timeout: "2s"}),
+			"durability default": () => client.removeWithDurability("b", "s", "c", "id"),
+			"durability timeout": () => client.removeWithDurability("b", "s", "c", "id", {timeout: "5s"}),
+		};
+		for (const [name, call] of Object.entries(accepted)) {
+			const result = outcome(call);
+			if (!result.includes("bucket connection for remove")) throw new Error(name + ": " + result);
+		}
+		for (const call of [
+			() => client.remove("b", "s", "c", "id", {timeout: "soon"}),
+			() => client.removeWithDurability("b", "s", "c", "id", {timeout: "0s"}),
+		]) {
+			const result = outcome(call);
+			if (!result.includes("remove timeout must be a positive duration")) throw new Error(result);
+		}
+		client.close();
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -153,6 +153,7 @@ want a populated bucket:
 | `test-insertbatch.js`           | Bulk insert (50 docs per iteration)                      |
 | `test-upsert.js`                | Upsert with a random key in a range                      |
 | `test-findone.js`               | Key/value get of a single document                       |
+| `test-remove.js`                | `remove` and `removeWithDurability` of seeded documents  |
 | `test-find.js`                  | N1QL query via `USE KEYS` (no index required)            |
 | `test-new-with-conn-per-vu.js`  | A dedicated connection per VU (max-connections testing)  |
 | `test-new-with-shared-conn.js`  | A single shared connection across all VUs (max QPS)      |

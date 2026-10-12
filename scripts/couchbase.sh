@@ -68,8 +68,11 @@ ensure_bucket() {
     echo "bucket '$CB_BUCKET' already exists"
   else
     echo "creating bucket '$CB_BUCKET'"
+    # Zero replicas: a single node cannot hold a replica, so majority-durable
+    # writes (removeWithDurability) would otherwise fail as "durability impossible".
     curl -s -u "$CB_USER:$CB_PASS" -X POST "$MGMT/pools/default/buckets" \
-      -d name="$CB_BUCKET" -d bucketType=couchbase -d ramQuota=256 -d flushEnabled=1 >/dev/null
+      -d name="$CB_BUCKET" -d bucketType=couchbase -d ramQuota=256 -d flushEnabled=1 \
+      -d replicaNumber=0 >/dev/null
   fi
   echo "waiting for bucket '$CB_BUCKET' to be healthy ..."
   for _ in $(seq 1 60); do
