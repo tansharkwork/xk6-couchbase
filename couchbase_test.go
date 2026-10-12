@@ -268,3 +268,30 @@ func TestRemoveArgumentsFromJS(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// Without a cluster, exists must surface the bucket failure as a thrown error
+// rather than report the document as missing.
+func TestExistsThrowsOnOperationFailure(t *testing.T) {
+	t.Parallel()
+	rt := modulestest.NewRuntime(t)
+	if err := rt.SetupModuleSystem(map[string]any{"k6/x/couchbase": New()}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	_, err := rt.RunOnEventLoop(`
+		const couchbase = require("k6/x/couchbase");
+		const client = couchbase.newClientPerVU({hostname: "127.0.0.1", username: "u", password: "p"}, [], "10ms");
+		let result;
+		try {
+			result = client.exists("b", "s", "c", "id");
+		} catch (error) {
+			result = String(error);
+		}
+		client.close();
+		if (typeof result !== "string" || !result.includes("bucket connection for exists")) {
+			throw new Error("exists did not throw on bucket failure: " + result);
+		}
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+}

@@ -317,18 +317,19 @@ func (c *Client) Find(query string) (any, error) {
 	return result, nil
 }
 
-// Exists reports whether a document with the given ID exists.
-func (c *Client) Exists(bucketName string, scope string, collection string, docID string) error {
+// Exists reports whether a document with the given ID exists. A missing
+// document returns false; only operation failures return an error.
+func (c *Client) Exists(bucketName string, scope string, collection string, docID string) (bool, error) {
 	bucket, err := c.getBucket(bucketName)
 	if err != nil {
-		return fmt.Errorf("failed to get bucket connection for findOne. Err: %w", err)
+		return false, fmt.Errorf("failed to get bucket connection for exists. Err: %w", err)
 	}
 	bucketScope := bucket.Scope(scope)
-	_, err = bucketScope.Collection(collection).Exists(docID, nil)
+	result, err := bucketScope.Collection(collection).Exists(docID, nil)
 	if err != nil {
-		return err
+		return false, err
 	}
-	return nil
+	return result.Exists(), nil
 }
 
 // FindOne fetches a single document by ID.

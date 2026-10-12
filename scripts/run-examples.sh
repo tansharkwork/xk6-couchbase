@@ -30,6 +30,7 @@ EXAMPLES=(
   test-upsert.js
   test-remove.js
   test-findone.js
+  test-exists.js
   test-find.js
   test-new-with-conn-per-vu.js
   test-new-with-shared-conn.js

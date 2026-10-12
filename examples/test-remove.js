@@ -7,13 +7,9 @@ const SCOPE = __ENV.CB_SCOPE || '_default';
 const COLLECTION = __ENV.CB_COLLECTION || '_default';
 
 function assertRemoved(docId) {
-    try {
-        client.findOne(BUCKET, SCOPE, COLLECTION, docId);
-    } catch (error) {
-        if (String(error).includes('document not found')) return;
-        throw error;
+    if (client.exists(BUCKET, SCOPE, COLLECTION, docId) !== false) {
+        throw new Error(`${docId} still exists after remove`);
     }
-    throw new Error(`${docId} still exists after remove`);
 }
 
 export default () => {
