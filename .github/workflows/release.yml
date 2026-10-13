@@ -1,0 +1,97 @@
+name: Release
+
+# On a version tag, builds k6 binaries with this extension for each platform and
+# publishes them in a GitHub release with generated notes and SHA-256 checksums.
+on:
+  push:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.goos }}/${{ matrix.goarch }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { goos: linux, goarch: amd64 }
+          - { goos: linux, goarch: arm64 }
+          - { goos: darwin, goarch: amd64 }
+          - { goos: darwin, goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      # Installed for the runner's platform; GOOS/GOARCH only apply to the build.
+      - name: Install xk6
+        run: go install "go.k6.io/xk6/cmd/xk6@$(make -s xk6-version)"
+      - name: Build and package
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          TAG: ${{ github.ref_name }}
+        run: |
+          name="xk6-couchbase_${TAG}_${GOOS}_${GOARCH}"
+          exe=xk6-couchbase
+          if [ "$GOOS" = windows ]; then exe+=.exe; fi
+          mkdir -p "dist/$name"
+          xk6 build --output "dist/$name/$exe" --with github.com/thotasrinath/xk6-couchbase=.
+          cp LICENSE README.md "dist/$name/"
+          if [ "$GOOS" = windows ]; then
+            (cd dist && zip -qr "$name.zip" "$name")
+          else
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+          fi
+          echo "NAME=$name" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.NAME }}
+          path: dist/${{ env.NAME }}.*
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      # Run the Linux binary before publishing: it must start and include the extension.
+      - name: Smoke test and read bundled k6 version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          name="xk6-couchbase_${TAG}_linux_amd64"
+          tar -xzf "dist/$name.tar.gz" -C "$RUNNER_TEMP"
+          version="$("$RUNNER_TEMP/$name/xk6-couchbase" version)"
+          echo "$version"
+          grep -q 'k6/x/couchbase' <<< "$version"
+          echo "K6_VERSION=$(awk 'NR==1 {print $2}' <<< "$version")" >> "$GITHUB_ENV"
+      - name: Write checksums
+        working-directory: dist
+        run: sha256sum -- * > checksums.txt
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A re-run replaces the assets but keeps the existing notes.
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+            exit 0
+          fi
+          flags=(--generate-notes --verify-tag)
+          # Tags such as v0.2.0-rc.1 are published as prereleases.
+          if [[ "$TAG" == *-* ]]; then flags+=(--prerelease); fi
+          notes="Prebuilt k6 ${K6_VERSION} binaries with this extension. Verify downloads with \`checksums.txt\`; see the README for usage."
+          gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" \
+            --notes "$notes" "${flags[@]}"

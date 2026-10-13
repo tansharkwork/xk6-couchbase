@@ -61,6 +61,33 @@ lint, example validation).
 
 ### For Use
 
+#### Prebuilt binaries
+
+Releases after v0.1.0 include k6 binaries with this extension built in, so no
+Go or xk6 installation is needed. Download the archive for your platform from
+[Releases](https://github.com/tansharkwork/xk6-couchbase/releases) (Linux and
+macOS on amd64 and arm64, Windows on amd64), verify it against
+`checksums.txt`, and run the binary in place of `k6`:
+
+```shell
+VERSION=v0.2.0 PLATFORM=linux_amd64   # e.g. darwin_arm64 for Apple silicon
+curl -LO "https://github.com/tansharkwork/xk6-couchbase/releases/download/$VERSION/xk6-couchbase_${VERSION}_${PLATFORM}.tar.gz"
+curl -LO "https://github.com/tansharkwork/xk6-couchbase/releases/download/$VERSION/checksums.txt"
+sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 --ignore-missing -c checksums.txt
+tar -xzf "xk6-couchbase_${VERSION}_${PLATFORM}.tar.gz"
+"./xk6-couchbase_${VERSION}_${PLATFORM}/xk6-couchbase" run script.js
+```
+
+The release notes state which k6 version each binary bundles. The macOS
+binaries are not signed; if macOS blocks a browser-downloaded binary, clear the
+quarantine flag with `xattr -d com.apple.quarantine xk6-couchbase`. To use a
+different k6 version or combine this with other extensions, build with xk6.
+
+#### Build with xk6
+
+Building requires Go 1.27.2 or newer. With Go's default `GOTOOLCHAIN=auto`, an
+older local Go downloads the required toolchain automatically.
+
 Install xk6, then build a k6 binary with this fork's extension:
 
 ```shell
@@ -73,7 +100,7 @@ The `module=replacement` form is required because the module path still names
 the upstream repository. Without the replacement,
 `--with github.com/thotasrinath/xk6-couchbase@latest` builds the upstream
 extension, which lacks this fork's features. Use a newer
-[release tag](https://github.com/tansharkwork/xk6-couchbase/tags) when one is
+[release](https://github.com/tansharkwork/xk6-couchbase/releases) when one is
 available, or `@master` for the latest unreleased changes.
 
 ## Development
@@ -96,8 +123,21 @@ database authorization and operations are verified separately with the examples.
 
 `make validate` runs password examples against a local Couchbase, starting a
 Community container when needed. `make validate-cert` separately provisions
-Enterprise and checks certificate success and rejection cases; neither default
-CI nor `make validate` runs it. See [examples/README.md](examples/README.md).
+Enterprise and checks certificate success and rejection cases; `make validate`
+does not run it. See [examples/README.md](examples/README.md).
+
+### Continuous integration
+
+GitHub Actions workflows live in [.github/workflows](.github/workflows):
+
+| Workflow | Runs on | What it checks |
+|---|---|---|
+| CI | Pushes and pull requests to `master` | golangci-lint, `go mod tidy`, race-enabled unit tests, and `make validate` against Couchbase Community |
+| Certificate validation | Manual dispatch, or changes to TLS code, certificate fixtures, or `go.mod`/`go.sum` | `make validate-cert` against Couchbase Enterprise |
+| govulncheck | Pushes, pull requests, and weekly | Known vulnerabilities reachable from this module |
+| Release | Pushing a `v*` tag | Builds k6 binaries for each platform and publishes them, with checksums and generated notes, as a GitHub release |
+
+Dependabot opens weekly grouped updates for Go modules and GitHub Actions.
 
 ## Examples
 

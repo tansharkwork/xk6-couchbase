@@ -231,7 +231,9 @@ make couchbase-enterprise-down
 
 `down` removes the managed container and generated certificate state; repeated
 calls are safe. The target leaves the fixture running for inspection or reruns.
-It is separate from `make validate` and the default CI workflow.
+It is separate from `make validate`. In GitHub Actions, the Certificate
+validation workflow runs it on demand and whenever TLS code, certificate
+fixtures, or `go.mod`/`go.sum` change.
 
 ### Acceptance coverage
 

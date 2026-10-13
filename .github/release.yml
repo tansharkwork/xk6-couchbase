@@ -1,0 +1,7 @@
+# Groups generated release notes; Dependabot PRs carry the dependencies label.
+changelog:
+  categories:
+    - title: Dependency updates
+      labels: [dependencies]
+    - title: Changes
+      labels: ["*"]
