@@ -1,6 +1,6 @@
 module github.com/thotasrinath/xk6-couchbase
 
-go 1.25.0
+go 1.27.2
 
 require (
 	github.com/couchbase/gocb/v2 v2.9.1

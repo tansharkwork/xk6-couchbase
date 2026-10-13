@@ -5,7 +5,8 @@
 
 MODULE      := github.com/thotasrinath/xk6-couchbase
 BINARY      := xk6-couchbase
-XK6         := go run go.k6.io/xk6/cmd/xk6@latest
+XK6_VERSION ?= v1.4.14
+XK6         := go run go.k6.io/xk6/cmd/xk6@$(XK6_VERSION)
 
 .DEFAULT_GOAL := help
 
@@ -88,6 +89,10 @@ couchbase-enterprise-down: ## Remove the managed Enterprise container and test c
 .PHONY: validate-cert
 validate-cert: $(BINARY) couchbase-enterprise-up ## Run positive and negative Enterprise certificate acceptance
 	BIN="$(abspath $(BINARY))" ./scripts/run-cert-examples.sh
+
+.PHONY: xk6-version
+xk6-version: ## Print the pinned xk6 version (used by the release workflow)
+	@echo $(XK6_VERSION)
 
 .PHONY: clean
 clean: ## Remove build artifacts

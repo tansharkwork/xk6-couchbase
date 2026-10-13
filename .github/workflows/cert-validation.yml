@@ -1,0 +1,42 @@
+name: Certificate validation
+
+# The Enterprise image is large and slow to start, so this suite runs on demand
+# or when TLS code, its fixtures, or the SDK dependencies change.
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths: &tls-paths
+      - tls.go
+      - tls_test.go
+      - examples/test-client-cert.js
+      - scripts/couchbase-enterprise.sh
+      - scripts/run-cert-examples.sh
+      - go.mod
+      - go.sum
+      - .github/workflows/cert-validation.yml
+  pull_request:
+    branches: [master]
+    paths: *tls-paths
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  enterprise:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+      - name: Build and run certificate acceptance
+        run: make validate-cert
+      - name: Remove Enterprise fixture
+        if: always()
+        run: make couchbase-enterprise-down
