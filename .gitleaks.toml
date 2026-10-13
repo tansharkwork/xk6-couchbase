@@ -1,0 +1,26 @@
+# gitleaks configuration: the default rules plus credential formats this repo
+# handles that the defaults miss. Used by the Secret scan workflow.
+title = "xk6-couchbase"
+
+[extend]
+useDefault = true
+
+# couchbases://user:secret@host
+[[rules]]
+id = "connection-string-credentials"
+description = "Password embedded in a connection string"
+regex = '''[a-z][a-z0-9+.-]*://[^:/\s@'"]+:([^@\s'"/$]{6,})@'''
+secretGroup = 1
+
+# Environment-style assignments such as CB_PASS=<value> or
+# export CB_ADMIN_PASS=<value>, as written to the certificate fixture's
+# connection.env. Requires an upper-case name and a literal value, so code such as
+# `password: dbConfig.Password` and references like "${CB_PASS:-password}" do not
+# match. Entropy filters placeholders used as local development defaults.
+[[rules]]
+id = "password-assignment"
+description = "Password or secret assigned to an environment variable"
+regex = '''\b[A-Z0-9_]*(?:PASS|PASSWD|PASSWORD|SECRET)[A-Z0-9_]*\s*(?:\?=|:=|=)\s*['"]?([A-Za-z0-9+/=_!@#%^&*~-]{12,})'''
+secretGroup = 1
+entropy = 3.0
+keywords = ["pass", "secret"]
