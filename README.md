@@ -70,7 +70,7 @@ macOS on amd64 and arm64, Windows on amd64), verify it against
 `checksums.txt`, and run the binary in place of `k6`:
 
 ```shell
-VERSION=v0.2.0 PLATFORM=linux_amd64   # e.g. darwin_arm64 for Apple silicon
+VERSION=v0.1.1 PLATFORM=linux_amd64   # e.g. darwin_arm64 for Apple silicon
 curl -LO "https://github.com/tansharkwork/xk6-couchbase/releases/download/$VERSION/xk6-couchbase_${VERSION}_${PLATFORM}.tar.gz"
 curl -LO "https://github.com/tansharkwork/xk6-couchbase/releases/download/$VERSION/checksums.txt"
 sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 --ignore-missing -c checksums.txt
@@ -93,7 +93,7 @@ Install xk6, then build a k6 binary with this fork's extension:
 ```shell
 go install go.k6.io/xk6/cmd/xk6@latest
 xk6 build --output xk6-couchbase \
-  --with github.com/thotasrinath/xk6-couchbase=github.com/tansharkwork/xk6-couchbase@v0.1.0
+  --with github.com/thotasrinath/xk6-couchbase=github.com/tansharkwork/xk6-couchbase@v0.1.1
 ```
 
 The `module=replacement` form is required because the module path still names
@@ -135,9 +135,11 @@ GitHub Actions workflows live in [.github/workflows](.github/workflows):
 | CI | Pushes and pull requests to `master` | golangci-lint, `go mod tidy`, race-enabled unit tests, and `make validate` against Couchbase Community |
 | Certificate validation | Manual dispatch, or changes to TLS code, certificate fixtures, or `go.mod`/`go.sum` | `make validate-cert` against Couchbase Enterprise |
 | govulncheck | Pushes, pull requests, and weekly | Known vulnerabilities reachable from this module |
+| Secret scan | Pushes and pull requests to `master` | gitleaks scan of the full git history for committed credentials |
 | Release | Pushing a `v*` tag | Builds k6 binaries for each platform and publishes them, with checksums and generated notes, as a GitHub release |
 
-Dependabot opens weekly grouped updates for Go modules and GitHub Actions.
+Dependabot opens weekly grouped updates for Go modules and GitHub Actions, and
+security update pull requests when an advisory affects a dependency.
 
 ## Examples
 
