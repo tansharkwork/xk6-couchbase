@@ -3,6 +3,10 @@ import xk6_couchbase from 'k6/x/couchbase';
 
 const client = xk6_couchbase.newClient(__ENV.CB_HOST || 'localhost', __ENV.CB_USER || '<username>', __ENV.CB_PASS || '<password>');
 
+const BUCKET = __ENV.CB_BUCKET || 'test';
+const SCOPE = __ENV.CB_SCOPE || '_default';
+const COLLECTION = __ENV.CB_COLLECTION || '_default';
+
 const batchsize = 50;
 
 export default () => {
@@ -13,7 +17,21 @@ export default () => {
         docobjs[makeId(15)] = getRecord();
     }
 
-    client.insertBatch("test", "_default", "_default", docobjs);
+    client.insertBatch(BUCKET, SCOPE, COLLECTION, docobjs);
+
+    // A batch that reuses an existing ID throws, but its other documents are
+    // still inserted.
+    const existingId = Object.keys(docobjs)[0];
+    const newId = makeId(15);
+    let failed = false;
+    try {
+        client.insertBatch(BUCKET, SCOPE, COLLECTION, { [existingId]: getRecord(), [newId]: getRecord() });
+    } catch (error) {
+        failed = true;
+    }
+    if (!failed || client.exists(BUCKET, SCOPE, COLLECTION, newId) !== true) {
+        throw new Error(`insertBatch with a duplicate ID: threw=${failed}, new document inserted=${client.exists(BUCKET, SCOPE, COLLECTION, newId)}`);
+    }
 }
 
 function getRecord() {

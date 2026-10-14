@@ -2,11 +2,15 @@ package xk6_couchbase
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/couchbase/gocb/v2"
 	"go.k6.io/k6/v2/js/modulestest"
 )
 
@@ -293,5 +297,157 @@ func TestExistsThrowsOnOperationFailure(t *testing.T) {
 	`)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+// fakeRows replays rows and then reports a terminal error, like a query that
+// streams results before the server aborts it.
+type fakeRows struct {
+	rows     []any
+	next     int
+	rowErr   error
+	err      error
+	closeErr error
+	closed   bool
+}
+
+func (f *fakeRows) Next() bool {
+	if f.next >= len(f.rows) {
+		return false
+	}
+	f.next++
+	return true
+}
+
+func (f *fakeRows) Row(valuePtr interface{}) error {
+	if f.rowErr != nil {
+		return f.rowErr
+	}
+	*valuePtr.(*any) = f.rows[f.next-1]
+	return nil
+}
+
+func (f *fakeRows) Err() error { return f.err }
+
+func (f *fakeRows) Close() error {
+	f.closed = true
+	return f.closeErr
+}
+
+func TestLastRow(t *testing.T) {
+	t.Parallel()
+	streamErr := errors.New("abort after rows")
+	tests := []struct {
+		name    string
+		rows    fakeRows
+		want    any
+		wantErr error
+	}{
+		{name: "last row", rows: fakeRows{rows: []any{1, 2, 3}}, want: 3},
+		{name: "no rows", rows: fakeRows{}},
+		{name: "error after rows", rows: fakeRows{rows: []any{1, 2}, err: streamErr}, wantErr: streamErr},
+		{name: "row decode error", rows: fakeRows{rows: []any{1}, rowErr: streamErr}, wantErr: streamErr},
+		{name: "close error", rows: fakeRows{rows: []any{1}, closeErr: streamErr}, wantErr: streamErr},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, err := lastRow(&tt.rows)
+			if !errors.Is(err, tt.wantErr) || (tt.wantErr == nil && err != nil) {
+				t.Fatalf("lastRow error = %v, want %v", err, tt.wantErr)
+			}
+			if tt.wantErr != nil && got != nil {
+				t.Fatalf("lastRow returned row %v alongside error %v", got, err)
+			}
+			if tt.wantErr == nil && got != tt.want {
+				t.Fatalf("lastRow = %v, want %v", got, tt.want)
+			}
+			if !tt.rows.closed {
+				t.Fatal("lastRow did not close the result")
+			}
+		})
+	}
+}
+
+func TestInsertBatchErr(t *testing.T) {
+	t.Parallel()
+	ops := func(failed int, total int) []gocb.BulkOp {
+		batch := make([]gocb.BulkOp, total)
+		for i := range batch {
+			op := &gocb.InsertOp{ID: fmt.Sprintf("doc-%d", i)}
+			if i < failed {
+				op.Err = gocb.ErrDocumentExists
+			}
+			batch[i] = op
+		}
+		return batch
+	}
+
+	if err := insertBatchErr(ops(0, 3)); err != nil {
+		t.Fatalf("successful batch returned %v", err)
+	}
+
+	err := insertBatchErr(ops(1, 2))
+	if !errors.Is(err, gocb.ErrDocumentExists) {
+		t.Fatalf("partial batch error %v does not wrap the document error", err)
+	}
+	for _, want := range []string{"1 of 2 documents failed", `"doc-0"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("partial batch error %q does not contain %q", err, want)
+		}
+	}
+
+	err = insertBatchErr(ops(maxReportedBatchErrors+3, 10))
+	if got := strings.Count(err.Error(), "document \""); got != maxReportedBatchErrors {
+		t.Fatalf("large batch error listed %d documents, want %d: %v", got, maxReportedBatchErrors, err)
+	}
+	if !strings.Contains(err.Error(), "and 3 more") {
+		t.Fatalf("large batch error does not count the unlisted failures: %v", err)
+	}
+}
+
+// A dedicated client whose bucket warm-up fails is never returned, so the
+// constructor must close it. This test is not parallel because it counts
+// goroutines; Go runs it before any parallel test resumes.
+func TestPerVUWarmupFailureClosesClient(t *testing.T) {
+	cb := couchbaseFor(t, New())
+	config := DBConfig{Hostname: "127.0.0.1", Username: "u", Password: "p"}
+	failWarmup := func() {
+		t.Helper()
+		if client, err := cb.NewClientPerVU(config, []string{"missing"}, "10ms", 0); err == nil || client != nil {
+			t.Fatalf("warm-up against no cluster succeeded: client=%v err=%v", client, err)
+		}
+	}
+
+	// The first call starts any process-wide SDK goroutines.
+	failWarmup()
+	baseline := runtime.NumGoroutine()
+	for range 5 {
+		failWarmup()
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for runtime.NumGoroutine() > baseline {
+		if time.Now().After(deadline) {
+			t.Fatalf("goroutines grew from %d to %d after failed warm-ups", baseline, runtime.NumGoroutine())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+}
+
+// A failed warm-up must not close the shared client other VUs already hold.
+func TestSharedWarmupFailureKeepsClient(t *testing.T) {
+	t.Parallel()
+	root := New()
+	cb := couchbaseFor(t, root)
+	config := DBConfig{Hostname: "127.0.0.1", Username: "u", Password: "p"}
+	shared, err := cb.NewClientWithSharedConnection(config, nil, "10ms", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cb.NewClientWithSharedConnection(config, []string{"missing"}, "10ms", 0); err == nil {
+		t.Fatal("warm-up against no cluster succeeded")
+	}
+	if err := shared.Close(); err != nil {
+		t.Fatalf("shared client was closed by a failed warm-up: %v", err)
 	}
 }

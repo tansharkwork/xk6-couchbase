@@ -16,6 +16,27 @@ export default () => {
 
     // USE KEYS performs a key lookup through the query service and needs no
     // secondary/primary index, so this runs on a fresh bucket.
-    const res = client.find(`select * from \`${BUCKET}\`.\`${SCOPE}\`.\`${COLLECTION}\` use keys "${DOC_ID}"`);
+    const keyspace = `\`${BUCKET}\`.\`${SCOPE}\`.\`${COLLECTION}\``;
+    const res = client.find(`select * from ${keyspace} use keys "${DOC_ID}"`);
     console.log(JSON.stringify(res));
+
+    // The same lookup as a prepared statement with a positional parameter.
+    const prepared = client.findByPreparedStmt(`select * from ${keyspace} use keys $1`, DOC_ID);
+    for (const row of [res, prepared]) {
+        if (!row || row[COLLECTION].title !== 'Perf test experiment') {
+            throw new Error(`query did not return the seeded document: ${JSON.stringify(row)}`);
+        }
+    }
+
+    // A query can fail after streaming rows. find throws rather than returning
+    // the rows read before the failure.
+    let failed = false;
+    try {
+        client.find('select case when x < 3 then x else abort("stop") end as v from array_range(0, 5) as x');
+    } catch (error) {
+        failed = true;
+    }
+    if (!failed) {
+        throw new Error('find reported success for a query that failed after streaming rows');
+    }
 }
