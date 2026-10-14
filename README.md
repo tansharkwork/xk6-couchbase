@@ -74,7 +74,7 @@ macOS on amd64 and arm64, Windows on amd64), verify it against
 `checksums.txt`, and run the binary in place of `k6`:
 
 ```shell
-VERSION=v0.1.1 PLATFORM=linux_amd64   # e.g. darwin_arm64 for Apple silicon
+VERSION=v0.2.0 PLATFORM=linux_amd64   # e.g. darwin_arm64 for Apple silicon
 curl -LO "https://github.com/tansharkwork/xk6-couchbase/releases/download/$VERSION/xk6-couchbase_${VERSION}_${PLATFORM}.tar.gz"
 curl -LO "https://github.com/tansharkwork/xk6-couchbase/releases/download/$VERSION/checksums.txt"
 sha256sum --ignore-missing -c checksums.txt   # macOS: shasum -a 256 --ignore-missing -c checksums.txt
@@ -97,7 +97,7 @@ Install xk6, then build a k6 binary with this fork's extension:
 ```shell
 go install go.k6.io/xk6/cmd/xk6@latest
 xk6 build --output xk6-couchbase \
-  --with github.com/thotasrinath/xk6-couchbase=github.com/tansharkwork/xk6-couchbase@v0.1.1
+  --with github.com/thotasrinath/xk6-couchbase=github.com/tansharkwork/xk6-couchbase@v0.2.0
 ```
 
 The `module=replacement` form is required because the module path still names
