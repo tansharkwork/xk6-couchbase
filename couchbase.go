@@ -3,6 +3,7 @@
 package xk6_couchbase
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -132,6 +133,11 @@ func (c *CouchBase) NewClientWithOptions(dbConfig DBConfig, opts options) (*Clie
 	for _, bucket := range opts.BucketsToWarm {
 		_, err := client.connectBucketOrLoad(bucket)
 		if err != nil {
+			// The caller never receives a dedicated client, so close it here.
+			// The shared client stays open for the VUs already using it.
+			if opts.DoConnectionPerVU {
+				_ = client.Close()
+			}
 			return nil, fmt.Errorf("failed to connect to bucket :%s, Err: %w", bucket, err)
 		}
 	}
@@ -235,7 +241,8 @@ func (c *Client) remove(bucketName string, scope string, collection string, docI
 }
 
 // InsertBatch inserts multiple documents (keyed by document ID) in a single
-// bulk operation.
+// bulk operation. If any document fails, it returns an error naming the failed
+// IDs; the other documents in the batch were still inserted.
 func (c *Client) InsertBatch(bucketName string, scope string, collection string, docs map[string]any) error {
 	bucket, err := c.getBucket(bucketName)
 	if err != nil {
@@ -254,12 +261,41 @@ func (c *Client) InsertBatch(bucketName string, scope string, collection string,
 		return err
 	}
 
-	return nil
+	return insertBatchErr(batchItems)
+}
+
+// maxReportedBatchErrors caps how many per-document failures an insertBatch
+// error lists, so a large failed batch does not flood the k6 log.
+const maxReportedBatchErrors = 5
+
+// insertBatchErr reports the per-document failures that Collection.Do leaves
+// on each operation rather than returning.
+func insertBatchErr(ops []gocb.BulkOp) error {
+	var errs []error
+	failed := 0
+	for _, op := range ops {
+		insert := op.(*gocb.InsertOp)
+		if insert.Err == nil {
+			continue
+		}
+		failed++
+		if len(errs) < maxReportedBatchErrors {
+			errs = append(errs, fmt.Errorf("document %q: %w", insert.ID, insert.Err))
+		}
+	}
+	if failed == 0 {
+		return nil
+	}
+	if failed > len(errs) {
+		errs = append(errs, fmt.Errorf("and %d more", failed-len(errs)))
+	}
+	return fmt.Errorf("insertBatch: %d of %d documents failed; the others were inserted: %w", failed, len(ops), errors.Join(errs...))
 }
 
 // FindMany fetches multiple documents by key in a single bulk operation,
 // returning a map of document ID to document. Keys that do not exist (or fail
-// to decode) are omitted from the result.
+// to decode) are omitted from the result; any other per-key failure, such as a
+// timeout, is returned as an error.
 func (c *Client) FindMany(bucketName string, scope string, collection string, keys []string) (map[string]interface{}, error) {
 	bucket, err := c.getBucket(bucketName)
 	if err != nil {
@@ -280,8 +316,11 @@ func (c *Client) FindMany(bucketName string, scope string, collection string, ke
 	results := make(map[string]interface{}, len(keys))
 	for _, op := range batchItems {
 		getOp := op.(*gocb.GetOp)
-		if getOp.Err != nil {
+		if errors.Is(getOp.Err, gocb.ErrDocumentNotFound) {
 			continue
+		}
+		if getOp.Err != nil {
+			return nil, fmt.Errorf("findMany: document %q: %w", getOp.ID, getOp.Err)
 		}
 		var doc interface{}
 		if err := getOp.Result.Content(&doc); err != nil {
@@ -294,27 +333,17 @@ func (c *Client) FindMany(bucketName string, scope string, collection string, ke
 	return results, nil
 }
 
-// Find executes a N1QL query and returns the last row read.
+// Find executes a N1QL query without preparing it and returns the last row
+// read. Use FindByPreparedStmt for a statement that runs repeatedly.
 func (c *Client) Find(query string) (any, error) {
-	var result interface{}
-
 	queryResult, err := c.cluster.Query(
 		query,
-		&gocb.QueryOptions{},
+		&gocb.QueryOptions{Adhoc: true},
 	)
 	if err != nil {
-		return result, err
+		return nil, err
 	}
-	// Print each found Row
-	for queryResult.Next() {
-
-		err := queryResult.Row(&result)
-		if err != nil {
-			return result, err
-		}
-	}
-
-	return result, nil
+	return lastRow(queryResult)
 }
 
 // Exists reports whether a document with the given ID exists. A missing
@@ -353,29 +382,48 @@ func (c *Client) FindOne(bucketName string, scope string, collection string, doc
 	return result, nil
 }
 
-// FindByPreparedStmt executes a N1QL query with positional parameters and
-// returns the last row read.
+// FindByPreparedStmt executes a N1QL query as a prepared statement with
+// positional parameters and returns the last row read. The SDK prepares each
+// distinct statement once and reuses the plan on later calls.
 func (c *Client) FindByPreparedStmt(query string, params ...interface{}) (any, error) {
-	var result interface{}
 	queryResult, err := c.cluster.Query(
 		query,
 		&gocb.QueryOptions{
-			Adhoc:                true,
 			PositionalParameters: params,
 		},
 	)
 	if err != nil {
-		return result, err
+		return nil, err
 	}
-	// Print each found Row
-	for queryResult.Next() {
+	return lastRow(queryResult)
+}
 
-		err := queryResult.Row(&result)
-		if err != nil {
-			return result, err
+// queryRows is the part of *gocb.QueryResult that lastRow uses, so its error
+// handling can be tested without a cluster.
+type queryRows interface {
+	Next() bool
+	Row(valuePtr interface{}) error
+	Err() error
+	Close() error
+}
+
+// lastRow reads every row and returns the last one. A query can fail after
+// streaming rows; that failure is reported only by Err, after Next returns
+// false, so it must be checked before returning a row as a success.
+func lastRow(rows queryRows) (result any, err error) {
+	defer func() {
+		if closeErr := rows.Close(); err == nil && closeErr != nil {
+			result, err = nil, closeErr
+		}
+	}()
+	for rows.Next() {
+		if err := rows.Row(&result); err != nil {
+			return nil, err
 		}
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	return result, nil
 }
 

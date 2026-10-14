@@ -17,6 +17,10 @@ The fork adds:
 - `removeWithDurability`, with `remove` and `removeWithDurability` both taking
   a configurable timeout.
 - An `exists` that returns `true` or `false`.
+- Failures that upstream reported as success now throw: query errors after
+  rows have streamed, per-document `insertBatch` failures, and `findMany`
+  failures other than a missing document.
+- `findByPreparedStmt` runs a prepared statement; `find` runs an unprepared one.
 - Full Couchbase connection strings (`couchbase://`, `couchbases://`, multiple
   hosts, query options) and a working `connectionBufferSizeBytes` argument.
 - Make targets and scripts that run every example against local Couchbase
@@ -201,6 +205,8 @@ export default () => {
         docobjs[makeId(15)] = getRecord();
     }
 
+    // Throws if any document fails (for example, an ID that already exists).
+    // The other documents in the batch are still inserted.
     client.insertBatch("test", "_default", "_default", docobjs);
 }
 
@@ -271,7 +277,8 @@ import xk6_couchbase from 'k6/x/couchbase';
 const client = xk6_couchbase.newClient('localhost', '<username>', '<password>');
 export default () => {
     // syntax :: client.findMany("<db>", "<scope>", "<keyspace>", ["<docId1>", "<docId2>", ...]);
-    // Returns a map of docId -> document for keys that exist. Missing keys are omitted.
+    // Returns a map of docId -> document for keys that exist. Missing keys are
+    // omitted; any other per-key failure, such as a timeout, throws.
     var res = client.findMany("test", "_default", "_default", ["key1", "key2", "key3"]);
     console.log(JSON.stringify(res));
 }
@@ -309,7 +316,8 @@ import xk6_couchbase from 'k6/x/couchbase';
 
 const client = xk6_couchbase.newClient('localhost', '<username>', '<password>');
 export default () => {
-    // Returns the last row of the result.
+    // Runs the statement unprepared and returns the last row of the result.
+    // Throws if the query fails, including after some rows have streamed.
     var res = client.find("select * from test._default._default use keys \"00096zszpZaT47X\"");
     console.log(res);
 }
@@ -324,6 +332,7 @@ import xk6_couchbase from 'k6/x/couchbase';
 const client = xk6_couchbase.newClient('localhost', '<username>', '<password>');
 export default () => {
     // Positional parameters follow the statement. Returns the last row of the result.
+    // The SDK prepares each distinct statement once and reuses the plan.
     var res = client.findByPreparedStmt("select * from test._default._default use keys $1", "00096zszpZaT47X");
     console.log(res);
 }
@@ -495,3 +504,19 @@ the previous durability behavior. Existing `remove` calls need no changes.
 both present and missing documents. Scripts that ignore the result behave the
 same; scripts that branch on it now get the correct answer. It still throws only
 when the operation fails, never for a missing document.
+
+`find` and `findByPreparedStmt` now throw when a query fails after streaming
+rows. Previously they returned the last row read as a success.
+
+`insertBatch` now throws when any document fails, for example because its ID
+already exists. The error names up to five failed IDs. Documents that did not
+fail are still inserted, so a thrown batch may be partly written. Previously
+these failures were silent.
+
+`findMany` still omits missing documents but now throws on other per-key
+failures, such as timeouts. Previously those keys were silently omitted.
+
+`findByPreparedStmt` now runs a prepared statement, and `find` runs an
+unprepared one. Upstream had these reversed, so `find` prepared every distinct
+statement while `findByPreparedStmt` prepared none. Compare query performance
+measured before this change with that in mind.
