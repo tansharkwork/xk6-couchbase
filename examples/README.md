@@ -29,7 +29,11 @@ reachable at `CB_HOST:8091`:
   cluster): it is reused as-is — Docker is never touched. The script only makes
   sure the target bucket exists.
 - **Not reachable**: a `couchbase:community` Docker container is created and
-  initialized automatically (requires Docker).
+  initialized automatically (requires Docker). The container is labeled as
+  created by the script, and `make couchbase-down` removes only a labeled
+  container. If a container named `couchbase` exists without the label (your
+  own, or one made by an older version of the script), the script refuses to
+  start or remove it. Set `CB_CONTAINER` to use a different name.
 
 Point it at any cluster and override credentials on the command line:
 
@@ -140,6 +144,9 @@ for f in examples/test-insert.js \
 done
 ```
 
+Each example records a check per iteration and sets a `checks: ['rate==1']`
+threshold, so a run where any iteration throws exits with code 99 instead of 0.
+
 `load-sequential-data.js` is intentionally left out of the loop above: it bulk
 loads 100,000 documents (10 VUs × 10,000 iterations). Run it on its own when you
 want a populated bucket:
@@ -153,12 +160,12 @@ want a populated bucket:
 | Script                          | Demonstrates                                              |
 | ------------------------------- | -------------------------------------------------------- |
 | `test-insert.js`                | Single document insert with a random key                 |
-| `test-insertbatch.js`           | Bulk insert (50 docs per iteration)                      |
+| `test-insertbatch.js`           | Bulk insert (50 docs per iteration), and that a batch with a duplicate ID throws while inserting its other documents |
 | `test-upsert.js`                | Upsert with a random key in a range                      |
 | `test-findone.js`               | Key/value get of a single document                       |
 | `test-exists.js`                | `exists` returning `true` for a seeded document and `false` for a missing one |
 | `test-remove.js`                | `remove` and `removeWithDurability` of seeded documents  |
-| `test-find.js`                  | N1QL query via `USE KEYS` (no index required)            |
+| `test-find.js`                  | N1QL query via `USE KEYS` (no index required), the same lookup as a prepared statement, and that a query failing after streaming rows throws |
 | `test-new-with-conn-per-vu.js`  | A dedicated connection per VU (max-connections testing)  |
 | `test-new-with-shared-conn.js`  | A single shared connection across all VUs (max QPS)      |
 | `load-sequential-data.js`       | Bulk load with sequential numeric IDs                    |
@@ -175,7 +182,7 @@ want a populated bucket:
 ## Tear down
 
 ```bash
-docker rm -f couchbase
+make couchbase-down
 ```
 
 ## Client-certificate authentication

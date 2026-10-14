@@ -137,7 +137,7 @@ GitHub Actions workflows live in [.github/workflows](.github/workflows):
 | Workflow | Runs on | What it checks |
 |---|---|---|
 | CI | Pushes and pull requests to `master` | golangci-lint, `go mod tidy`, race-enabled unit tests, and `make validate` against Couchbase Community |
-| Certificate validation | Manual dispatch, or changes to TLS code, certificate fixtures, or `go.mod`/`go.sum` | `make validate-cert` against Couchbase Enterprise |
+| Certificate validation | Manual dispatch, or changes to the extension, the examples and scripts the suite runs, the `Makefile`, or `go.mod`/`go.sum` | `make validate-cert` against Couchbase Enterprise |
 | govulncheck | Pushes, pull requests, and weekly | Known vulnerabilities reachable from this module |
 | Secret scan | Pushes and pull requests to `master` | gitleaks scan of the full git history for committed credentials |
 | Release | Pushing a `v*` tag | Builds k6 binaries for each platform and publishes them, with checksums and generated notes, as a GitHub release |

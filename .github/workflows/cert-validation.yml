@@ -1,15 +1,20 @@
 name: Certificate validation
 
 # The Enterprise image is large and slow to start, so this suite runs on demand
-# or when TLS code, its fixtures, or the SDK dependencies change.
+# or when the extension, the examples and scripts it runs, or the SDK
+# dependencies change.
 on:
   workflow_dispatch:
   push:
     branches: [master]
     paths: &tls-paths
+      - couchbase.go
       - tls.go
       - tls_test.go
+      - Makefile
       - examples/test-client-cert.js
+      - examples/test-new-with-shared-conn.js
+      - examples/test-new-with-conn-per-vu.js
       - scripts/couchbase-enterprise.sh
       - scripts/run-cert-examples.sh
       - go.mod

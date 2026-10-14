@@ -36,14 +36,24 @@ EXAMPLES=(
   test-new-with-shared-conn.js
 )
 
+# A pass needs exit status 0 and no logged errors. The examples set a checks
+# threshold, so a failed operation exits 99; init-time failures exit 107.
 fail=0
 for f in "${EXAMPLES[@]}"; do
   out=$("$BIN" run --quiet --iterations 1 --vus 1 \
         -e "CB_HOST=$CB_HOST" -e "CB_USER=$CB_USER" -e "CB_PASS=$CB_PASS" -e "CB_BUCKET=$CB_BUCKET" \
         "$EX_DIR/$f" 2>&1)
-  if echo "$out" | grep -qiE "level=error|GoError|panic"; then
-    echo "FAIL  $f"
-    echo "$out" | grep -iE "level=error|GoError|panic" | head -2 | sed 's/^/        /'
+  status=$?
+  errors=$(echo "$out" | grep -iE "level=error|GoError|panic")
+  if [ "$status" -ne 0 ] || [ -n "$errors" ]; then
+    echo "FAIL  $f (exit $status)"
+    if [ -n "$errors" ]; then
+      echo "$errors" | head -2 | sed 's/^/        /'
+    elif [ -n "$out" ]; then
+      echo "$out" | tail -5 | sed 's/^/        /'
+    else
+      echo "        k6 produced no output."
+    fi
     fail=1
   else
     echo "PASS  $f"
