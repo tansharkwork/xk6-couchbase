@@ -63,19 +63,26 @@ CB_USER ?= Administrator
 CB_PASS ?= password
 CB_BUCKET ?= test
 
-CB_ENV := CB_HOST=$(CB_HOST) CB_USER=$(CB_USER) CB_PASS=$(CB_PASS) CB_BUCKET=$(CB_BUCKET)
+# Pass these to the scripts through the environment rather than pasting them
+# into the shell command, so spaces, quotes, and ; or & stay part of the value.
+# $(value ...) also keeps a "$" literal instead of letting make expand it.
+override CB_HOST := $(value CB_HOST)
+override CB_USER := $(value CB_USER)
+override CB_PASS := $(value CB_PASS)
+override CB_BUCKET := $(value CB_BUCKET)
+export CB_HOST CB_USER CB_PASS CB_BUCKET
 
 .PHONY: couchbase-up
 couchbase-up: ## Start & init a local Couchbase (reuses an existing one if reachable)
-	$(CB_ENV) ./scripts/couchbase.sh up
+	./scripts/couchbase.sh up
 
 .PHONY: couchbase-down
 couchbase-down: ## Remove the local Couchbase container created by couchbase-up
-	$(CB_ENV) ./scripts/couchbase.sh down
+	./scripts/couchbase.sh down
 
 .PHONY: validate
 validate: $(BINARY) couchbase-up ## Build, ensure Couchbase, and run password examples end-to-end
-	$(CB_ENV) ./scripts/run-examples.sh
+	./scripts/run-examples.sh
 
 # Enterprise certificate acceptance is opt-in and separate from Community validation.
 .PHONY: couchbase-enterprise-up

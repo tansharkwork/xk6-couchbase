@@ -91,7 +91,8 @@ run_cert_case() {
 }
 
 # Password authentication must keep working when certificate handling is
-# "enable". These examples have no thresholds, so also reject logged errors.
+# "enable". The examples' checks threshold catches failed operations; also
+# reject logged errors, which can occur outside an iteration.
 run_password_case() {
   local mode="$1" example="$2"
   local out status ok=no

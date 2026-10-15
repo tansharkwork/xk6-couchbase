@@ -81,6 +81,9 @@ func normalizeConnectionConfig(dbConfig DBConfig, connectionBufferSizeBytes int)
 		spec.Options["kv_buffer_size"] = []string{strconv.Itoa(defaultConnectionBufferSizeBytes)}
 	} else if size, err := strconv.Atoi(values[len(values)-1]); err != nil || size < 1 || len(values) > 1 {
 		return config, fmt.Errorf("connection string kv_buffer_size must be a single positive integer")
+	} else {
+		// Rewrite the value so that, say, 04096 and 4096 compare equal in shared mode.
+		spec.Options["kv_buffer_size"] = []string{strconv.Itoa(size)}
 	}
 	config.connectionString = spec.String()
 	return config, nil

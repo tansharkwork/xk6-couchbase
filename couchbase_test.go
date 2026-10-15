@@ -128,6 +128,7 @@ func TestSharedConnectionBufferConfiguration(t *testing.T) {
 	}{
 		{name: "constructor overrides URI", host: "127.0.0.1?kv_buffer_size=8192", buffer: 4096, equivalentHost: "127.0.0.1", equivalentBuffer: 4096, conflictingBuffer: 8192},
 		{name: "URI when constructor is omitted", host: "127.0.0.1?kv_buffer_size=4096", equivalentHost: "127.0.0.1", equivalentBuffer: 4096, conflictingBuffer: 8192},
+		{name: "URI value with a leading zero", host: "127.0.0.1?kv_buffer_size=04096", equivalentHost: "127.0.0.1", equivalentBuffer: 4096, conflictingBuffer: 8192},
 		{name: "nonpositive values use the default", host: "127.0.0.1", equivalentHost: "127.0.0.1", equivalentBuffer: -1, conflictingBuffer: 2 * defaultConnectionBufferSizeBytes},
 	}
 	for _, tt := range tests {
