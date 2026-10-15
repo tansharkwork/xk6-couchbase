@@ -92,19 +92,20 @@ run_cert_case() {
 
 # Password authentication must keep working when certificate handling is
 # "enable". The examples' checks threshold catches failed operations; also
-# reject logged errors, which can occur outside an iteration.
+# reject logged errors, which can occur outside an iteration. With a CA bundle,
+# the example connects over TLS and verifies the server.
 run_password_case() {
-  local mode="$1" example="$2"
+  local mode="$1" example="$2" label="$3" host="$4" ca="${5:-}"
   local out status ok=no
   out=$(env -i PATH="$PATH" HOME="${HOME:-}" TMPDIR="${TMPDIR:-/tmp}" \
     "$BIN" run --quiet --include-system-env-vars=false --vus 2 --iterations 4 \
-    -e "CB_HOST=$CB_PASSWORD_HOST" -e "CB_USER=$CB_USER" -e "CB_PASS=$CB_PASS" \
-    -e "CB_BUCKET=$CB_BUCKET" "$EX_DIR/$example" 2>&1)
+    -e "CB_HOST=$host" -e "CB_USER=$CB_USER" -e "CB_PASS=$CB_PASS" \
+    -e "CB_BUCKET=$CB_BUCKET" -e "CB_CA_CERT=$ca" "$EX_DIR/$example" 2>&1)
   status=$?
   if [ "$status" -eq "$EXIT_OK" ] && ! printf '%s\n' "$out" | grep -qiE 'level=error|GoError|panic'; then
     ok=yes
   fi
-  report "$mode" "password" "$status" "$EXIT_OK without errors" "$out" "$ok"
+  report "$mode" "$label" "$status" "$EXIT_OK without errors" "$out" "$ok"
 }
 
 for mode in shared per-vu; do
@@ -114,8 +115,10 @@ for mode in shared per-vu; do
   run_cert_case "$mode" untrusted "$CB_UNTRUSTED_CERT" "$CB_UNTRUSTED_KEY" "$EXIT_REJECTED"
   run_cert_case "$mode" "restricted (write)" "$CB_RESTRICTED_CERT" "$CB_RESTRICTED_KEY" "$EXIT_DENIED"
 done
-run_password_case shared test-new-with-shared-conn.js
-run_password_case per-vu test-new-with-conn-per-vu.js
+run_password_case shared test-new-with-shared-conn.js password "$CB_PASSWORD_HOST"
+run_password_case per-vu test-new-with-conn-per-vu.js password "$CB_PASSWORD_HOST"
+run_password_case shared test-new-with-shared-conn.js "password (TLS)" "$CB_HOST" "$CB_CA_CERT"
+run_password_case per-vu test-new-with-conn-per-vu.js "password (TLS)" "$CB_HOST" "$CB_CA_CERT"
 total=$((passed + failed))
 printf 'Certificate acceptance: %s passed, %s failed (%s cases).\n' "$passed" "$failed" "$total"
 if [ "$failed" -ne 0 ]; then

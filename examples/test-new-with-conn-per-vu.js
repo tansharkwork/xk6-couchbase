@@ -9,6 +9,11 @@ const DOC_ID = 'per-vu-example';
 // newClientPerVU creates a dedicated cluster connection for every VU. Useful
 // for testing the maximum number of connections a cluster can handle.
 const dbConfig = { hostname: __ENV.CB_HOST || 'localhost', username: __ENV.CB_USER || '<username>', password: __ENV.CB_PASS || '<password>' };
+// Optional password authentication over verified TLS: set CB_HOST to a
+// couchbases:// connection string and CB_CA_CERT to the server's CA bundle.
+if (__ENV.CB_CA_CERT) {
+    dbConfig.tls = { caCertPath: __ENV.CB_CA_CERT };
+}
 const bucketsToPreWarm = [BUCKET];
 const client = xk6_couchbase.newClientPerVU(dbConfig, bucketsToPreWarm, "5s");
 
