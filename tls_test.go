@@ -143,12 +143,15 @@ func TestSDKCertificateHandshake(t *testing.T) {
 				t.Fatal(err)
 			}
 			got := server.await(t, client)
-			if name == "valid identity" {
+			switch name {
+			case "valid identity":
 				if got.err != nil || got.identity != "test-user" {
 					t.Fatalf("client identity was not authenticated: identity=%q err=%v", got.identity, got.err)
 				}
-			} else {
-				requireRejected(t, got)
+			case "untrusted client":
+				requireRejected(t, got, serverRejectsClient)
+			default:
+				requireRejected(t, got, clientRejectsServer)
 			}
 		})
 	}
@@ -198,7 +201,7 @@ func TestJSClientTLSHandshake(t *testing.T) {
 			got := server.await(t, client)
 			switch {
 			case tt.wrongCA:
-				requireRejected(t, got)
+				requireRejected(t, got, clientRejectsServer)
 			case got.err != nil:
 				t.Fatalf("handshake failed: %v", got.err)
 			case tt.password && got.identity != "":
@@ -297,14 +300,33 @@ func (server *tlsServer) await(t *testing.T, client *Client) handshake {
 	}
 }
 
-// requireRejected fails unless verification, not a timeout, ended the handshake.
-func requireRejected(t *testing.T, got handshake) {
+// tlsRejection names the side of the handshake expected to reject the other.
+type tlsRejection int
+
+const (
+	clientRejectsServer tlsRejection = iota
+	serverRejectsClient
+)
+
+// requireRejected fails unless the expected side's certificate verification
+// ended the handshake, rather than a timeout or an unrelated socket error.
+func requireRejected(t *testing.T, got handshake, by tlsRejection) {
 	t.Helper()
 	if got.err == nil || got.identity != "" {
 		t.Fatal("an invalid TLS peer completed an authenticated handshake")
 	}
-	if netErr, ok := got.err.(net.Error); ok && netErr.Timeout() {
-		t.Fatalf("handshake never reached peer verification: %v", got.err)
+	switch by {
+	case serverRejectsClient:
+		var verifyErr *tls.CertificateVerificationError
+		if !errors.As(got.err, &verifyErr) {
+			t.Fatalf("server did not reject the client certificate: %v", got.err)
+		}
+	case clientRejectsServer:
+		// The SDK rejects the server certificate by sending the server a TLS alert.
+		var opErr *net.OpError
+		if !errors.As(got.err, &opErr) || opErr.Op != "remote error" {
+			t.Fatalf("client did not reject the server certificate with a TLS alert: %v", got.err)
+		}
 	}
 }
 

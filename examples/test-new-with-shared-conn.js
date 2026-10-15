@@ -25,14 +25,22 @@ export default () => {
     let ok = false;
     try {
         // Seed the document first so this example is independently runnable.
-        client.upsert(BUCKET, SCOPE, COLLECTION, DOC_ID, {
+        // Each VU writes its own document with a fresh marker, so reading back
+        // the marker proves this iteration's write was returned.
+        const docId = `${DOC_ID}-${__VU}`;
+        const marker = `${__VU}-${__ITER}-${Date.now()}`;
+        client.upsert(BUCKET, SCOPE, COLLECTION, docId, {
             correlationId: 'test--couchbase',
             title: 'Perf test experiment',
+            marker,
         });
 
         // syntax :: client.findOne("<bucket>", "<scope>", "<collection>", "<docId>");
-        const res = client.findOne(BUCKET, SCOPE, COLLECTION, DOC_ID);
+        const res = client.findOne(BUCKET, SCOPE, COLLECTION, docId);
         console.log(JSON.stringify(res));
+        if (!res || res.marker !== marker || res.title !== 'Perf test experiment') {
+            throw new Error(`findOne did not return the document just written: ${JSON.stringify(res)}`);
+        }
         ok = true;
     } finally {
         check(ok, { 'shared client succeeded': value => value });
