@@ -182,8 +182,18 @@ want a populated bucket:
 
 ## Tear down
 
+If you started Couchbase with `make couchbase-up` or `make validate`:
+
 ```bash
 make couchbase-down
+```
+
+If you created the container with the manual `docker run` above, remove it
+directly. `make couchbase-down` refuses to, because only containers the script
+created carry its ownership label:
+
+```bash
+docker rm -f couchbase
 ```
 
 ## Client-certificate authentication

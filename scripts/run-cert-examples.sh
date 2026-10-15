@@ -91,8 +91,9 @@ run_cert_case() {
 }
 
 # Password authentication must keep working when certificate handling is
-# "enable". These examples have no thresholds, so also reject logged errors.
-# With a CA bundle, the example connects over TLS and verifies the server.
+# "enable". The examples' checks threshold catches failed operations; also
+# reject logged errors, which can occur outside an iteration. With a CA bundle,
+# the example connects over TLS and verifies the server.
 run_password_case() {
   local mode="$1" example="$2" label="$3" host="$4" ca="${5:-}"
   local out status ok=no
