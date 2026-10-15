@@ -118,6 +118,7 @@ variables, falling back to placeholders if unset:
 | `CB_BUCKET`     | `test`        | Bucket                   |
 | `CB_SCOPE`      | `_default`    | Scope                    |
 | `CB_COLLECTION` | `_default`    | Collection               |
+| `CB_CA_CERT`    | unset         | CA bundle; makes the `test-new-with-*` examples connect over verified TLS (use a `couchbases://` `CB_HOST`) |
 
 Pass them with `-e`:
 
@@ -222,7 +223,7 @@ requires an exact k6 exit code for each case:
 | Mapped client certificate | 0 | KV and query checks pass |
 | Unmapped identity, expired certificate, untrusted issuer | 107 | Rejected before the bucket is ready |
 | Mapped user without write permission | 99 | Authenticated, but the write is denied |
-| Password login (`test-new-with-*` examples, plaintext) | 0 with no logged errors | Passwords still work in `enable` mode |
+| Password login (`test-new-with-*` examples), plaintext and over verified TLS | 0 with no logged errors | Passwords still work in `enable` mode |
 
 Exact codes keep a broken fixture from passing a negative case. Missing fixture
 files fail preflight. `up` refuses to start if another process already holds
@@ -239,18 +240,17 @@ make couchbase-enterprise-down
 `down` removes the managed container and generated certificate state; repeated
 calls are safe. The target leaves the fixture running for inspection or reruns.
 It is separate from `make validate`. In GitHub Actions, the Certificate
-validation workflow runs it on demand and whenever TLS code, certificate
-fixtures, or `go.mod`/`go.sum` change.
+validation workflow runs it on demand and whenever the extension, the examples
+and scripts it runs, the `Makefile`, or `go.mod`/`go.sum` change.
 
 ### Acceptance coverage
 
 | Check | Command or scenario |
 | --- | --- |
-| Module lifecycle, buffer configuration, and local TLS peer verification | `make test-race`; no Couchbase required |
+| Module lifecycle, buffer configuration, and local TLS peer verification, including clients built from JavaScript with a client certificate or a password and custom CA | `make test-race`; no Couchbase required |
 | Enterprise certificate-authenticated readiness, KV and query access | `make validate-cert`, both connection modes |
 | Unmapped, expired, untrusted and insufficient-permission client rejection | The same target; each must exit with its exact expected code |
-| Password compatibility over plaintext | `make validate-cert`, both connection modes |
-| Password over verified TLS | Not automated; the password examples have no `tls` option |
+| Password compatibility over plaintext and over verified TLS | `make validate-cert`, both connection modes |
 | Certificate-only `mandatory` policy | Separate server configuration with required inter-node encryption |
 | Sustained-load connection counts and audit identity | Separate longer-running workload and server inspection |
 

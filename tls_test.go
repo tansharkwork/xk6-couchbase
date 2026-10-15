@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -135,81 +136,175 @@ func TestSDKCertificateHandshake(t *testing.T) {
 			if name == "untrusted client" {
 				clientCAs = newTLSFixture(t).roots
 			}
-			listener, err := net.Listen("tcp", "127.0.0.1:0")
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(func() { _ = listener.Close() })
-			deadline := time.Now().Add(30 * time.Second)
-			if end, ok := t.Deadline(); ok && end.Add(-time.Second).Before(deadline) {
-				deadline = end.Add(-time.Second)
-			}
-			timer := time.NewTimer(time.Until(deadline))
-			defer timer.Stop()
-			if err := listener.(*net.TCPListener).SetDeadline(deadline); err != nil {
-				t.Fatal(err)
-			}
-			type handshake struct {
-				identity string
-				err      error
-			}
-			result := make(chan handshake, 1)
-			go func() {
-				for {
-					conn, err := listener.Accept()
-					if err != nil {
-						result <- handshake{err: err}
-						return
-					}
-					_ = conn.SetDeadline(deadline)
-					server := tls.Server(conn, &tls.Config{
-						Certificates: []tls.Certificate{serverCert},
-						ClientAuth:   tls.RequireAndVerifyClientCert,
-						ClientCAs:    clientCAs,
-						MinVersion:   tls.VersionTLS12,
-					})
-					err = server.Handshake()
-					_ = conn.Close()
-					// Bucket bootstrap can cancel an earlier cluster bootstrap socket.
-					if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
-						continue
-					}
-					if err != nil {
-						result <- handshake{err: err}
-						return
-					}
-					result <- handshake{identity: server.ConnectionState().PeerCertificates[0].Subject.CommonName}
-					return
-				}
-			}()
-
-			config := DBConfig{Hostname: "couchbases://" + listener.Addr().String() + "?enable_dns_srv=false", TLS: &fixture.config}
+			server := startTLSServer(t, serverCert, tls.RequireAndVerifyClientCert, clientCAs)
+			config := DBConfig{Hostname: server.connectionString(), TLS: &fixture.config}
 			client, err := couchbaseFor(t, New()).NewClientPerVU(config, nil, "1s", 0)
 			if err != nil {
 				t.Fatal(err)
 			}
-			t.Cleanup(func() {
-				// Refuse reconnects before Close waits for the SDK's dialers.
-				_ = listener.Close()
-				_ = client.Close()
-			})
-			// Opening a bucket starts the SDK's KV bootstrap and TLS connection.
-			client.cluster.Bucket("test")
-			select {
-			case got := <-result:
-				if name == "valid identity" {
-					if got.err != nil || got.identity != "test-user" {
-						t.Fatalf("client identity was not authenticated: identity=%q err=%v", got.identity, got.err)
-					}
-				} else if got.err == nil || got.identity != "" {
-					t.Fatal("an invalid TLS peer completed an authenticated handshake")
-				} else if netErr, ok := got.err.(net.Error); ok && netErr.Timeout() {
-					t.Fatalf("handshake never reached peer verification: %v", got.err)
+			got := server.await(t, client)
+			if name == "valid identity" {
+				if got.err != nil || got.identity != "test-user" {
+					t.Fatalf("client identity was not authenticated: identity=%q err=%v", got.identity, got.err)
 				}
-			case <-timer.C:
-				t.Fatal("SDK did not attempt a TLS handshake")
+			} else {
+				requireRejected(t, got)
 			}
 		})
+	}
+}
+
+// The handshake tests above build DBConfig in Go. These build clients from
+// JavaScript, so they also prove the tls field names map onto TLSConfig.
+func TestJSClientTLSHandshake(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		constructor string
+		password    bool
+		wrongCA     bool
+	}{
+		{name: "client certificate", constructor: "newClientPerVU"},
+		{name: "password with custom CA", constructor: "newClientWithSharedConnection", password: true},
+		{name: "password with untrusted server", constructor: "newClientPerVU", password: true, wrongCA: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			fixture := newTLSFixture(t)
+			if tt.wrongCA {
+				fixture.config.CACertPath = newTLSFixture(t).config.CACertPath
+			}
+			// A password client sends no certificate. RequestClientCert asks for
+			// one without requiring it, so the server can confirm none was sent.
+			clientAuth := tls.RequireAndVerifyClientCert
+			config := map[string]any{"tls": map[string]string{
+				"caCertPath":     fixture.config.CACertPath,
+				"clientCertPath": fixture.config.ClientCertPath,
+				"clientKeyPath":  fixture.config.ClientKeyPath,
+			}}
+			if tt.password {
+				clientAuth = tls.RequestClientCert
+				config["username"], config["password"] = "u", "p"
+				config["tls"] = map[string]string{"caCertPath": fixture.config.CACertPath}
+			}
+			server := startTLSServer(t, fixture.server, clientAuth, fixture.roots)
+			config["hostname"] = server.connectionString()
+			configJSON, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client := clientFromModule(t, New(), "xk6_couchbase."+tt.constructor+"("+string(configJSON)+`, [], "1s")`)
+			got := server.await(t, client)
+			switch {
+			case tt.wrongCA:
+				requireRejected(t, got)
+			case got.err != nil:
+				t.Fatalf("handshake failed: %v", got.err)
+			case tt.password && got.identity != "":
+				t.Fatalf("password client presented certificate %q", got.identity)
+			case !tt.password && got.identity != "test-user":
+				t.Fatalf("client identity was not authenticated: identity=%q", got.identity)
+			}
+		})
+	}
+}
+
+type handshake struct {
+	identity string
+	err      error
+}
+
+// tlsServer accepts SDK connections and reports the first handshake that
+// completes or fails verification.
+type tlsServer struct {
+	listener net.Listener
+	result   chan handshake
+	timer    *time.Timer
+}
+
+func startTLSServer(t *testing.T, serverCert tls.Certificate, clientAuth tls.ClientAuthType, clientCAs *x509.CertPool) *tlsServer {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = listener.Close() })
+	deadline := time.Now().Add(30 * time.Second)
+	if end, ok := t.Deadline(); ok && end.Add(-time.Second).Before(deadline) {
+		deadline = end.Add(-time.Second)
+	}
+	server := &tlsServer{listener: listener, result: make(chan handshake, 1), timer: time.NewTimer(time.Until(deadline))}
+	t.Cleanup(func() { server.timer.Stop() })
+	if err := listener.(*net.TCPListener).SetDeadline(deadline); err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				server.result <- handshake{err: err}
+				return
+			}
+			_ = conn.SetDeadline(deadline)
+			tlsConn := tls.Server(conn, &tls.Config{
+				Certificates: []tls.Certificate{serverCert},
+				ClientAuth:   clientAuth,
+				ClientCAs:    clientCAs,
+				MinVersion:   tls.VersionTLS12,
+			})
+			err = tlsConn.Handshake()
+			_ = conn.Close()
+			// Bucket bootstrap can cancel an earlier cluster bootstrap socket.
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				continue
+			}
+			if err != nil {
+				server.result <- handshake{err: err}
+				return
+			}
+			got := handshake{}
+			if peers := tlsConn.ConnectionState().PeerCertificates; len(peers) > 0 {
+				got.identity = peers[0].Subject.CommonName
+			}
+			server.result <- got
+			return
+		}
+	}()
+	return server
+}
+
+func (server *tlsServer) connectionString() string {
+	return "couchbases://" + server.listener.Addr().String() + "?enable_dns_srv=false"
+}
+
+// await starts the client's TLS bootstrap and waits for the server's verdict.
+func (server *tlsServer) await(t *testing.T, client *Client) handshake {
+	t.Helper()
+	t.Cleanup(func() {
+		// Refuse reconnects before Close waits for the SDK's dialers.
+		_ = server.listener.Close()
+		_ = client.Close()
+	})
+	// Opening a bucket starts the SDK's KV bootstrap and TLS connection.
+	client.cluster.Bucket("test")
+	select {
+	case got := <-server.result:
+		return got
+	case <-server.timer.C:
+		t.Fatal("SDK did not attempt a TLS handshake")
+		return handshake{}
+	}
+}
+
+// requireRejected fails unless verification, not a timeout, ended the handshake.
+func requireRejected(t *testing.T, got handshake) {
+	t.Helper()
+	if got.err == nil || got.identity != "" {
+		t.Fatal("an invalid TLS peer completed an authenticated handshake")
+	}
+	if netErr, ok := got.err.(net.Error); ok && netErr.Timeout() {
+		t.Fatalf("handshake never reached peer verification: %v", got.err)
 	}
 }
 
