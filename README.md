@@ -89,7 +89,7 @@ different k6 version or combine this with other extensions, build with xk6.
 
 #### Build with xk6
 
-Building requires Go 1.27.2 or newer. With Go's default `GOTOOLCHAIN=auto`, an
+Building requires Go 1.27.3 or newer. With Go's default `GOTOOLCHAIN=auto`, an
 older local Go downloads the required toolchain automatically.
 
 Install xk6, then build a k6 binary with this fork's extension:
